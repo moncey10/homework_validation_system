@@ -1,7 +1,58 @@
 {
-  "homework_id": "hw01",
-  "questions": [
-    { "qid": "Q1", "type": "text", "answer": "Artificial Intelligence is the simulation of human intelligence." },
-    { "qid": "Q2", "type": "text", "answer": "Machine Learning is a subset of AI that learns from data." }
-  ]
+  "hw01": {
+    "questions": [
+      {
+        "qid": "Q1",
+        "type": "text",
+        "answer": "Artificial Intelligence is the simulation of human intelligence."
+      },
+      {
+        "qid": "Q2",
+        "type": "text",
+        "answer": "Machine Learning is a subset of AI that learns from data."
+      }
+    ]
+  },
+  "hw99": {
+    "questions": [
+      {
+        "qid": "Q1",
+        "type": "text",
+        "answer": "Artificial Intelligence is the simulation of human intelligence."
+      },
+      {
+        "qid": "Q2",
+        "type": "text",
+        "answer": "Machine Learning is a subset of AI that learns from data."
+      }
+    ]
+  },
+  "hw90": {
+    "questions": [
+      {
+        "qid": "Q1",
+        "type": "text",
+        "answer": "Artificial Intelligence is the simulation of human intelligence."
+      },
+      {
+        "qid": "Q2",
+        "type": "text",
+        "answer": "Machine Learning is a subset of AI that learns from data."
+      }
+    ]
+  },
+  "hw15": {
+    "questions": [
+      {
+        "qid": "Q1",
+        "type": "text",
+        "answer": "Artificial Intelligence is the simulation of human intelligence."
+      },
+      {
+        "qid": "Q2",
+        "type": "text",
+        "answer": "Machine Learning is a subset of AI that learns from data."
+      }
+    ]
+  }
 }
