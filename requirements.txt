@@ -6,3 +6,4 @@ pytesseract
 scikit-learn
 sqlalchemy
 requests
+openai
