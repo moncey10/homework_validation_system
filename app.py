@@ -309,9 +309,9 @@ async def submit(
         overall_score = grading.get("overall_score") or 0
 
         if overall_score >= threshold:
-            submission_remarks = "Matched"
+            submission_remarks = "Answer is complete and correct"
         else:
-            submission_remarks = "Not Matched"
+            submission_remarks = "Attempt appreciated — revise topic"
 
 
         extracted_data.append({
