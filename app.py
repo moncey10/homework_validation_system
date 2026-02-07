@@ -1,15 +1,18 @@
 import os
 import io
 import re
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Dict, Any, List
 
 import requests
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from PIL import Image
+from PIL import Image, ImageOps, ImageFilter
 import pytesseract
 
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+
+# ✅ OpenAI SDK (pip install openai)
+from openai import OpenAI
 
 
 # =========================================================
@@ -22,93 +25,155 @@ else:
 
 
 # =========================================================
-# ERP CONFIG
+# ✅ ERP CONFIG
 # =========================================================
-ERP_BASE = "https://erp.triz.co.in/lms_data"
-STORAGE_BASE = "https://erp.triz.co.in/storage/student/"
+ERP_BASE = os.getenv("ERP_BASE", "https://erp.triz.co.in/lms_data")
+STORAGE_BASE = os.getenv("STORAGE_BASE", "https://erp.triz.co.in/storage/student/")
+ERP_TOKEN = os.getenv("ERP_TOKEN", "")
+
+# =========================================================
+# ✅ OPENAI CONFIG
+# =========================================================
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")  # you can change
+client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+
+app = FastAPI(title="Homework Validation System (LLM Remarks)")
 
 
 # =========================================================
-# APP INIT
+# ✅ ERP HELPERS
 # =========================================================
-app = FastAPI(title="Homework Validation System (ERP Teacher Auto)")
+def _erp_get(params: dict) -> list:
+    headers = {}
+    if ERP_TOKEN:
+        headers["Authorization"] = f"Bearer {ERP_TOKEN}"
+
+    r = requests.get(ERP_BASE, params=params, headers=headers, timeout=30)
+    r.raise_for_status()
+    data = r.json()
+    if not isinstance(data, list):
+        raise HTTPException(status_code=502, detail="ERP returned invalid JSON (expected list).")
+    return data
+
+
+def fetch_student_record(homework_id: int, student_id: int) -> Dict[str, Any]:
+    data = _erp_get({"table": "homework", "filters[id]": homework_id, "filters[student_id]": student_id})
+    if not data:
+        raise HTTPException(status_code=404, detail="No ERP record found for this homework_id + student_id")
+    return data[0]
+
+
+def fetch_teacher_image_by_homework_id(homework_id: int) -> str:
+    data = _erp_get({"table": "homework", "filters[id]": homework_id})
+    if not data:
+        raise HTTPException(status_code=404, detail="No ERP homework record found for this homework_id")
+
+    row = data[0]
+    for key in ("image", "teacher_image", "reference_image", "solution_image"):
+        v = (row.get(key) or "").strip()
+        if v:
+            return v
+
+    raise HTTPException(
+        status_code=422,
+        detail="Teacher image missing in ERP for this homework_id (image/teacher_image/reference_image/solution_image all empty).",
+    )
 
 
 # =========================================================
-# OCR
+# ✅ DOWNLOAD
 # =========================================================
-def extract_text_from_image(image_bytes: bytes) -> str:
-    try:
-        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid image file: {e}")
+def _looks_like_html(b: bytes) -> bool:
+    head = (b[:300] or b"").lower()
+    return (b"<!doctype html" in head) or (b"<html" in head) or (b"<head" in head)
 
-    try:
-        return (pytesseract.image_to_string(img, lang="eng") or "").strip()
-    except pytesseract.TesseractNotFoundError:
+
+def download_bytes(url: str) -> bytes:
+    headers = {}
+    if ERP_TOKEN:
+        headers["Authorization"] = f"Bearer {ERP_TOKEN}"
+
+    r = requests.get(url, headers=headers, timeout=30)
+    r.raise_for_status()
+    b = r.content or b""
+
+    if _looks_like_html(b):
+        raise HTTPException(status_code=502, detail="Teacher image URL returned HTML (not an image). Storage may require auth.")
+
+    return b
+
+
+# =========================================================
+# ✅ OCR
+# =========================================================
+def _preprocess_for_ocr(img: Image.Image) -> Image.Image:
+    img = img.convert("L")
+    img = ImageOps.autocontrast(img)
+
+    w, h = img.size
+    if max(w, h) < 1600:
+        scale = 1600 / max(w, h)
+        img = img.resize((int(w * scale), int(h * scale)))
+
+    img = img.filter(ImageFilter.SHARPEN)
+    img = img.point(lambda p: 255 if p > 170 else 0)
+    return img
+
+
+def extract_text_from_image(image_bytes: bytes, filename: str = "unknown") -> str:
+    """Extract text from image bytes with validation."""
+    # Validate that we have actual image data
+    if not image_bytes or len(image_bytes) < 50:
+        raise HTTPException(status_code=400, detail=f"Invalid file: '{filename}' - file is empty or too small")
+    
+    # Check for common image magic bytes
+    valid_image_signatures = {
+        b'\xff\xd8\xff': 'JPEG',
+        b'\x89PNG\r\n\x1a\n': 'PNG',
+        b'GIF87a': 'GIF',
+        b'GIF89a': 'GIF',
+        b'BM': 'BMP',
+    }
+    
+    is_valid_image = False
+    detected_type = None
+    for sig, img_type in valid_image_signatures.items():
+        if image_bytes[:len(sig)] == sig:
+            is_valid_image = True
+            detected_type = img_type
+            break
+    
+    if not is_valid_image:
+        # Try to identify what was actually sent
+        file_header = image_bytes[:20]
         raise HTTPException(
-            status_code=500,
-            detail=(
-                "Tesseract OCR not found.\n"
-                f"tesseract_cmd: {pytesseract.pytesseract.tesseract_cmd}\n"
-                "Fix: Install Tesseract or set correct path in app.py."
-            ),
+            status_code=400, 
+            detail=f"Invalid image format: '{filename}' - not a valid image file (detected: {file_header[:10]}). Supported formats: JPEG, PNG, GIF, BMP"
         )
+    
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid image: '{filename}' - cannot read image file: {str(e)}")
+
+    img = _preprocess_for_ocr(img)
+
+    try:
+        text = pytesseract.image_to_string(img, lang="eng", config="--oem 3 --psm 6")
+    except pytesseract.TesseractNotFoundError:
+        raise HTTPException(status_code=500, detail="Tesseract OCR not found. Install it / fix path.")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"OCR failed: {e}")
 
-
-# =========================================================
-# SEGMENTATION
-# =========================================================
-def _segment_by_regex(text: str, pattern: re.Pattern, label_builder) -> Dict[str, str]:
-    cleaned = (text or "").replace("\r", "\n")
-    matches = list(pattern.finditer(cleaned))
-    if not matches:
-        return {}
-
-    segs: Dict[str, str] = {}
-    for i, m in enumerate(matches):
-        label = label_builder(m)
-        start = m.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(cleaned)
-        segs[label] = cleaned[start:end].strip()
-    return segs
-
-
-def segment_text_flexibly(text: str) -> Dict[str, str]:
-    q_pat = re.compile(r"\bQ\s*([0-9]+)\s*[\.\:\-]?\s*", re.IGNORECASE)
-    segs = _segment_by_regex(text, q_pat, lambda m: f"Q{m.group(1)}")
-    if segs:
-        return segs
-
-    step_pat = re.compile(r"\bStep\s*([0-9]+[A-Za-z]?)\s*[\.\:\-]?\s*", re.IGNORECASE)
-    segs = _segment_by_regex(text, step_pat, lambda m: f"STEP{m.group(1).upper()}")
-    if segs:
-        return segs
-
-    num_pat = re.compile(r"(?m)^\s*([0-9]{1,2})\s*[\)\.]\s+")
-    segs = _segment_by_regex(text, num_pat, lambda m: f"ITEM{m.group(1)}")
-    if segs:
-        return segs
-
-    full = (text or "").strip()
-    return {"FULL_TEXT": full} if full else {}
-
-
-def segmentation_type(segs: Dict[str, str]) -> str:
-    keys = list(segs.keys())
-    if any(k.startswith("Q") for k in keys):
-        return "Q"
-    if any(k.startswith("STEP") for k in keys):
-        return "STEP"
-    if any(k.startswith("ITEM") for k in keys):
-        return "ITEM"
-    return "FULL_TEXT"
+    text = (text or "").strip()
+    text = re.sub(r"[ \t]+", " ", text)
+    return text
 
 
 # =========================================================
-# SIMILARITY + GRADING
+# ✅ SIMILARITY
 # =========================================================
 def cosine_sim(a: str, b: str) -> float:
     a = (a or "").strip().lower()
@@ -120,144 +185,176 @@ def cosine_sim(a: str, b: str) -> float:
     return float(cosine_similarity(X[0], X[1])[0][0])
 
 
-def grade_using_teacher_reference(
-    teacher_segments: Dict[str, str],
-    student_segments: Dict[str, str],
-    threshold: float = 0.75
-) -> Dict[str, Any]:
-    t_type = segmentation_type(teacher_segments)
-    s_type = segmentation_type(student_segments)
+def grade_similarity(teacher_text: str, student_text: str, threshold: float) -> Dict[str, Any]:
+    teacher_text = (teacher_text or "").strip()
+    student_text = (student_text or "").strip()
 
-    if not teacher_segments:
-        return {"mode": "TEACHER_REFERENCE_GRADING", "status": "NO_TEACHER_TEXT", "overall_score": None, "per_item": []}
-    if not student_segments:
-        return {"mode": "TEACHER_REFERENCE_GRADING", "status": "NO_STUDENT_TEXT", "overall_score": None, "per_item": []}
+    if not teacher_text:
+        return {"status": "NO_TEACHER_TEXT", "overall_score": None, "threshold": float(threshold)}
+    if not student_text:
+        return {"status": "NO_STUDENT_TEXT", "overall_score": None, "threshold": float(threshold)}
 
-    # If one FULL_TEXT and other segmented -> whole compare
-    if (t_type == "FULL_TEXT" and s_type != "FULL_TEXT") or (s_type == "FULL_TEXT" and t_type != "FULL_TEXT"):
-        t_full = teacher_segments.get("FULL_TEXT") or "\n".join(teacher_segments.values())
-        s_full = student_segments.get("FULL_TEXT") or "\n".join(student_segments.values())
-        sim = cosine_sim(s_full, t_full)
-        ok = sim >= threshold
-        return {
-            "mode": "TEACHER_REFERENCE_GRADING",
-            "status": "WHOLE_TEXT_COMPARE",
-            "threshold": threshold,
-            "teacher_segmentation_type": t_type,
-            "student_segmentation_type": s_type,
-            "overall_score": 1.0 if ok else 0.0,
-            "per_item": [{"label": "FULL_TEXT", "similarity": sim, "is_correct": ok, "reason": "match" if ok else "mismatch"}],
-        }
-
-    labels = sorted(set(teacher_segments.keys()) | set(student_segments.keys()))
-    per_item = []
-    correct = 0
-    total = 0
-
-    for label in labels:
-        t = (teacher_segments.get(label) or "").strip()
-        s = (student_segments.get(label) or "").strip()
-        if not t and not s:
-            continue
-        total += 1
-        if not t:
-            per_item.append({"label": label, "status": "NO_TEACHER_SEGMENT", "similarity": None, "is_correct": None})
-            continue
-        if not s:
-            per_item.append({"label": label, "status": "MISSING_STUDENT_ANSWER", "similarity": 0.0, "is_correct": False})
-            continue
-
-        sim = cosine_sim(s, t)
-        ok = sim >= threshold
-        if ok:
-            correct += 1
-        per_item.append({"label": label, "similarity": sim, "is_correct": ok, "reason": "match" if ok else "mismatch"})
-
-    return {
-        "mode": "TEACHER_REFERENCE_GRADING",
-        "status": "PER_SEGMENT_COMPARE",
-        "threshold": threshold,
-        "teacher_segmentation_type": t_type,
-        "student_segmentation_type": s_type,
-        "total": total,
-        "correct": correct,
-        "overall_score": (correct / total) if total else None,
-        "per_item": per_item,
-    }
+    sim = cosine_sim(student_text, teacher_text)
+    return {"status": "EVALUATED", "overall_score": sim, "threshold": float(threshold)}
 
 
 # =========================================================
-# ERP HELPERS (ROBUST TEACHER IMAGE PICK)
+# ✅ LLM REMARK (for individual image evaluation)
 # =========================================================
-def _erp_get(params: dict) -> list:
-    r = requests.get(ERP_BASE, params=params, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    if not isinstance(data, list):
-        raise HTTPException(status_code=502, detail="ERP returned invalid JSON (not a list).")
-    return data
-
-
-def fetch_student_record(homework_id: int, student_id: int) -> Dict[str, Any]:
-    data = _erp_get({"table": "homework", "filters[id]": homework_id, "filters[student_id]": student_id})
-    if len(data) == 0:
-        raise HTTPException(status_code=404, detail="No ERP record found for this homework_id + student_id")
-    return data[0]
-
-
-def fetch_teacher_image_filename(homework_id: int, student_id: int) -> str:
+def generate_llm_remark(
+    teacher_text: str, 
+    student_text: str, 
+    sim_score: float, 
+    threshold: float,
+    completion_status: str = "N"
+) -> str:
     """
-    Try best-effort:
-      1) homework_id + student_id
-      2) homework_id only
-    Return first non-empty 'image'.
+    Generate AI-generated remark using OpenAI API for individual image evaluation.
     """
-    # 1) try with student filter
-    try:
-        data1 = _erp_get({"table": "homework", "filters[id]": homework_id, "filters[student_id]": student_id})
-        if len(data1) > 0:
-            img = (data1[0].get("image") or "").strip()
-            if img:
-                return img
-    except Exception:
-        pass
+    if client is None:
+        return "AI remark generation unavailable (OpenAI API key not configured)."
 
-    # 2) try without student filter
-    data2 = _erp_get({"table": "homework", "filters[id]": homework_id})
-    if len(data2) == 0:
-        raise HTTPException(status_code=404, detail="No ERP record found for this homework_id (teacher)")
-    img2 = (data2[0].get("image") or "").strip()
-    if img2:
-        return img2
-
-    raise HTTPException(
-        status_code=400,
-        detail="Teacher image missing in ERP for this homework_id (field 'image' is empty)."
+    # Keep excerpts reasonable
+    teacher_excerpt = (teacher_text or "")[:800]
+    student_excerpt = (student_text or "")[:800]
+    
+    # Determine if individual answer passed
+    passed = sim_score >= threshold
+    
+    # System prompt for consistent but varied responses
+    system_prompt = (
+        "You are an experienced, encouraging teacher providing feedback on student homework. "
+        "Generate a unique, personalized remark for each student submission. "
+        "Vary your phrasing and tone each time while maintaining educational value. "
+        "Be constructive, specific, and motivating. "
+        "Keep the remark concise (15-25 words)."
+    )
+    
+    # User prompt with context
+    user_prompt = (
+        f"Teacher reference text (excerpt):\n{teacher_excerpt}\n\n"
+        f"Student answer text (excerpt):\n{student_excerpt}\n\n"
+        f"Similarity score: {sim_score:.2f} (Threshold: {threshold})\n"
+        f"Status: {'PASSED' if passed else 'NEEDS IMPROVEMENT'}\n\n"
+        "Provide a unique, encouraging remark that helps the student understand "
+        "what they did well and how they can improve. "
+        "Make it different from standard template responses."
     )
 
-
-def download_bytes(url: str) -> bytes:
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-    return r.content
-
-
-# Teacher cache: homework_id -> (teacher_filename, teacher_text)
-_TEACHER_CACHE: Dict[int, Tuple[str, str]] = {}
-
-
-def get_teacher_text_cached(homework_id: int, teacher_filename: str, teacher_url: str) -> Tuple[str, bool]:
-    cached = _TEACHER_CACHE.get(homework_id)
-    if cached and cached[0] == teacher_filename and cached[1].strip():
-        return cached[1], True
-    teacher_bytes = download_bytes(teacher_url)
-    teacher_text = extract_text_from_image(teacher_bytes)
-    _TEACHER_CACHE[homework_id] = (teacher_filename, teacher_text)
-    return teacher_text, False
+    try:
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=60,
+            temperature=0.8,  # Higher temperature for more varied responses
+        )
+        remark = (resp.choices[0].message.content or "").strip()
+        return remark if remark else "Great effort! Keep working to improve your understanding."
+    except Exception as e:
+        print(f"OpenAI API error for individual remark: {e}")
+        return "Thank you for your submission. Your work has been reviewed."
 
 
 # =========================================================
-# ROUTES
+# ✅ LLM SUBMISSION REMARK (overall submission feedback) - ALWAYS AI GENERATED
+# =========================================================
+def generate_llm_submission_remark(
+    teacher_text: str,
+    student_texts: List[str],
+    scores: List[float],
+    threshold: float,
+    completion_status: str,
+    student_id: int,
+    homework_id: int,
+    homework_title: str,
+    submission_date: str
+) -> str:
+    """
+    Generate overall submission remarks using OpenAI API ONLY.
+    Evaluates how well student submission MATCHES the teacher's reference image.
+    """
+    if client is None:
+        return "AI feedback unavailable. Your submission has been graded based on similarity."
+    
+    if not student_texts:
+        return "No submission found to evaluate."
+    
+    # Prepare context for the AI - FOCUS ON MATCHING
+    teacher_excerpt = (teacher_text or "")[:800]
+    
+    # Analyze matching scores
+    num_images = len(student_texts)
+    if scores and num_images > 0:
+        avg_score = sum(scores) / num_images
+        passed_count = sum(1 for score in scores if score >= threshold)
+        pass_rate = (passed_count / num_images * 100)
+    else:
+        avg_score = 0
+        passed_count = 0
+        pass_rate = 0
+    
+    # Prepare student text samples with match status
+    student_samples = []
+    for i, (text, score) in enumerate(zip(student_texts, scores), 1):
+        text_excerpt = (text or "")[:80].strip()
+        if text_excerpt:
+            pct = int(score * 100)
+            student_samples.append(f"Part {i}: {pct}% match - \"{text_excerpt}\"")
+    
+    # System prompt - AI generates everything based on match score
+    system_prompt = (
+        "You are an intelligent homework grading assistant. "
+        "Evaluate the student's submission based on how well it MATCHES the teacher's reference. "
+        "Generate a unique, specific feedback message for each submission. "
+        "Based on the match percentage, explain what the student did well or what they're missing. "
+        "Be encouraging but honest. Keep feedback between 30-50 words."
+    )
+    
+    # User prompt - let AI interpret the match score
+    user_prompt = (
+        f"HOMEWORK EVALUATION\n"
+        f"Student: {student_id} | Homework: {homework_id} | Title: {homework_title or 'N/A'}\n\n"
+        f"TEACHER REFERENCE (correct answer):\n{teacher_excerpt[:600]}\n\n"
+        f"RESULTS:\n"
+        f"• Average Match: {avg_score:.0%} (threshold: {threshold:.0%})\n"
+        f"• Passed: {passed_count}/{num_images} ({pass_rate:.0f}%)\n"
+        f"• Overall: {'PASSED' if completion_status == 'Y' else 'NEEDS IMPROVEMENT'}\n\n"
+    )
+    
+    if student_samples:
+        user_prompt += "STUDENT SUBMISSIONS:\n" + "\n".join(student_samples[:4]) + "\n\n"
+    
+    user_prompt += (
+        "FEEDBACK:\n"
+        f"Based on the {avg_score:.0%} match, provide specific feedback about the student's answer. "
+        f"If {avg_score:.0%} is high (above 75%), praise accuracy and completeness. "
+        f"If {avg_score:.0%} is medium (50-75%), mention what's partially correct and what's missing. "
+        f"If {avg_score:.0%} is low (below 50%), clearly explain what key points from the teacher's reference are missing. "
+        "Be specific about content coverage."
+    )
+
+    try:
+        resp = client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            max_tokens=100,
+            temperature=0.7,
+        )
+        remark = (resp.choices[0].message.content or "").strip()
+        return remark if remark else f"Match score: {avg_score:.0%}. Review individual feedback for details."
+    except Exception as e:
+        print(f"OpenAI error: {e}")
+        return f"Match score: {avg_score:.0%}. Review individual feedback for details."
+
+
+# =========================================================
+# ✅ ROUTES
 # =========================================================
 @app.get("/health")
 def health():
@@ -267,77 +364,107 @@ def health():
 @app.post("/submit")
 async def submit(
     student_id: int = Form(...),
-    homework_id: int = Form(...),          # ERP homework record id like 2249927
-    images: List[UploadFile] = File(...),  # student uploads
+    homework_id: int = Form(...),
+    images: List[UploadFile] = File(...),
     threshold: float = Form(0.75),
 ):
     if not images:
         raise HTTPException(status_code=400, detail="At least one student image is required")
 
-    # Student metadata (completion_status + submission_remarks)
     try:
-        student_rec = fetch_student_record(homework_id, student_id)
-    except requests.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"ERP student fetch failed: {e}")
+        threshold_f = float(threshold)
+    except Exception:
+        raise HTTPException(status_code=400, detail="threshold must be a number")
 
-    completion_status = student_rec.get("completion_status")
-    # submission_remarks = student_rec.get("submission_remarks")
+    student_rec = fetch_student_record(homework_id, student_id)
 
-    # Teacher image filename (robust)
-    try:
-        teacher_filename = fetch_teacher_image_filename(homework_id, student_id)
-    except requests.HTTPError as e:
-        raise HTTPException(status_code=502, detail=f"ERP teacher fetch failed: {e}")
+    # Teacher by homework_id only
+    teacher_filename = fetch_teacher_image_by_homework_id(homework_id)
+    teacher_url = STORAGE_BASE.rstrip("/") + "/" + teacher_filename.lstrip("/")
+    teacher_bytes = download_bytes(teacher_url)
+    teacher_text = extract_text_from_image(teacher_bytes, filename=teacher_filename)
 
-    teacher_url = STORAGE_BASE + teacher_filename
-
-    # Teacher OCR (cached)
-    teacher_text, teacher_from_cache = get_teacher_text_cached(homework_id, teacher_filename, teacher_url)
-    teacher_segments = segment_text_flexibly(teacher_text)
+    if not teacher_text.strip():
+        raise HTTPException(status_code=422, detail="Teacher OCR extracted empty text. Teacher reference is not OCR-friendly.")
 
     extracted_data = []
+    remarks = []
+    scores = []
+    student_texts = []
+    gradings = []
+
+    # First pass: extract text and calculate scores
     for img in images:
         student_bytes = await img.read()
-        student_text = extract_text_from_image(student_bytes)
-        student_segments = segment_text_flexibly(student_text)
+        student_text = extract_text_from_image(student_bytes, filename=img.filename if hasattr(img, 'filename') else f"image_{i}")
+        student_texts.append(student_text)
 
-        grading = grade_using_teacher_reference(
-            teacher_segments=teacher_segments,
-            student_segments=student_segments,
-            threshold=float(threshold),
-        )
-        overall_score = grading.get("overall_score") or 0
-
-        if overall_score >= threshold:
-            submission_remarks = "Answer is complete and correct"
+        grading = grade_similarity(teacher_text, student_text, threshold_f)
+        score = grading.get("overall_score")
+        gradings.append(grading)
+        
+        if score is not None:
+            scores.append(float(score))
+    
+    # Calculate completion_status based on all scores
+    calculated_completion_status = "Y" if scores and all(s >= threshold_f for s in scores) else "N"
+    
+    # Second pass: generate individual remarks for each image
+    for i, img in enumerate(images):
+        grading = gradings[i]
+        student_text = student_texts[i]
+        score = grading.get("overall_score")
+        
+        if score is None:
+            remark = "Unable to evaluate: reference or answer text is not readable."
         else:
-            submission_remarks = "Attempt appreciated — revise topic"
+            remark = generate_llm_remark(
+                teacher_text, 
+                student_text, 
+                float(score), 
+                threshold_f, 
+                completion_status=calculated_completion_status
+            )
 
-
+        remarks.append(remark)
         extracted_data.append({
-            "original_filename": img.filename,
-            "segmented_answers": student_segments,
-            "validation": {
-                "grading": grading,
-                "teacher_reference_found": True,
-                "teacher_filename": teacher_filename,
-                "teacher_cached": teacher_from_cache,
-                "teacher_segmentation_type": segmentation_type(teacher_segments),
-                "student_segmentation_type": segmentation_type(student_segments),
-            }
+            "original_filename": img.filename if hasattr(img, 'filename') else f"image_{i}.jpg",
+            "student_text": student_text,
+            "grading": grading,
+            "ai_generated_remark": remark,
         })
+    
+    # ALWAYS generate submission remarks using OpenAI
+    submission_remarks = generate_llm_submission_remark(
+        teacher_text=teacher_text,
+        student_texts=student_texts,
+        scores=scores,
+        threshold=threshold_f,
+        completion_status=calculated_completion_status,
+        student_id=student_id,
+        homework_id=homework_id,
+        homework_title=student_rec.get("title", ""),
+        submission_date=student_rec.get("date", "")
+    )
+    
+    # Log the AI-generated submission remark for debugging
+    print(f"\n{'='*60}")
+    print(f"AI GENERATED SUBMISSION REMARK:")
+    print(f"{'='*60}")
+    print(submission_remarks)
+    print(f"{'='*60}\n")
 
     return {
         "student_id": student_id,
         "homework_id": homework_id,
         "title": student_rec.get("title"),
         "date": student_rec.get("date"),
-        "completion_status": completion_status,
-
-        "submission_remarks": submission_remarks,
+        "completion_status": student_rec.get("completion_status"),
+        "calculated_completion_status": calculated_completion_status,
+        "submission_remarks": submission_remarks,  # Always AI-generated
         "teacher_image": teacher_filename,
         "teacher_url": teacher_url,
         "files_processed": len(images),
         "extracted_data": extracted_data,
-        "message": "Teacher auto-fetched from ERP. Student images processed successfully.",
+        "message": "All remarks generated by OpenAI LLM (no template fallbacks).",
     }
