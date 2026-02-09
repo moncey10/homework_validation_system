@@ -1,6 +1,8 @@
 import os
 import io
 import re
+import uuid
+from datetime import datetime
 from typing import Dict, Any, List
 
 import requests
@@ -199,6 +201,79 @@ def grade_similarity(teacher_text: str, student_text: str, threshold: float) -> 
 
 
 # =========================================================
+# ✅ FALLBACK MESSAGES - Score-appropriate and varied
+# =========================================================
+HIGH_SCORE_MESSAGES = [
+    "Excellent work! Your {:.0%} score shows great understanding of the material!",
+    "Amazing job! You achieved {:.0%} - your hard work is paying off!",
+    "Outstanding performance with {:.0%} - keep up the fantastic work!",
+    "Brilliant! {:.0%} demonstrates excellent grasp of concepts!",
+    "Perfect! {:.0%} shows you've mastered this topic completely!",
+    "Wonderful! {:.0%} reflects your dedication and smart work!",
+    "Spot on! {:.0%} shows you've understood everything perfectly!",
+    "Spectacular! {:.0%} - you're doing an amazing job!",
+    "Marvelous! {:.0%} shows exceptional understanding!",
+    "Superb! {:.0%} - your efforts have truly paid off!",
+    "Fantastic! {:.0%} demonstrates your excellent grasp!",
+    "Incredible! {:.0%} - you're exceeding all expectations!",
+    "Remarkable! {:.0%} shows true mastery of the subject!",
+    "Brilliant work! {:.0%} reflects your hard work and talent!",
+    "Spectacular! {:.0%} shows you're a natural!",
+    "Outstanding! {:.0%} - you're crushing it!",
+    "Magnificent! {:.0%} shows incredible dedication!",
+    "Excellent! {:.0%} - you're making amazing progress!",
+    "Superb work! {:.0%} shows your commitment!",
+    "First class! {:.0%} - you're doing wonderfully!",
+]
+
+MEDIUM_SCORE_MESSAGES = [
+    "Good effort! Your score of {:.0%} shows decent understanding. Review missed parts to improve!",
+    "Solid work at {:.0%}. Focus on areas where you lost marks for next time!",
+    "You're making progress at {:.0%}. Keep practicing the topics you missed!",
+    "Nice try at {:.0%}. A bit more study will help you reach full marks!",
+    "Nice work! {:.0%} shows potential - review and improve!",
+    "Good progress! {:.0%} - keep pushing forward!",
+    "Decent attempt at {:.0%}. Some areas need more attention!",
+    "Good start at {:.0%}. Build on this foundation!",
+    "Promising {:.0%}. Spend more time on challenging topics!",
+    "Nearly there! {:.0%} - almost perfect, keep trying!",
+    "Keep going! {:.0%} shows you're on the right track!",
+    "Good improvement! {:.0%} - continue this positive trend!",
+    "Nice effort! {:.0%} - review what you missed and grow!",
+    "Well done! {:.0%} - a little more practice will help!",
+    "Good job! {:.0%} - focus on weak areas next time!",
+    "Promising! {:.0%} - you're getting closer to mastery!",
+    "Keep studying! {:.0%} - every bit of effort counts!",
+    "Nice work! {:.0%} - identify gaps and fill them!",
+    "Growing! {:.0%} - you're making steady progress!",
+    "Focused! {:.0%} - keep refining your understanding!",
+]
+
+LOW_SCORE_MESSAGES = [
+    "Your score of {:.0%} shows you need to review the material more carefully.",
+    "Keep trying! {:.0%} means there's room for improvement. Review the teacher's answers!",
+    "Your submission scored {:.0%}. Please review the correct answers and try again!",
+    "At {:.0%}, you'll need to study the material more thoroughly before resubmitting.",
+    "{:.0%} suggests more practice is needed. Go through the concepts again!",
+    "{:.0%} is a starting point. Focus on understanding the basics!",
+    "{:.0%} indicates you should revisit the topics covered. Don't give up!",
+    "{:.0%} means it's time for extra study. Review and try again!",
+    "{:.0%} - please review the lesson materials and resubmit!",
+    "{:.0%} shows you need more practice. Keep working at it!",
+    "{:.0%} - every expert was once a beginner. Keep learning!",
+    "{:.0%} - identify what you missed and study those areas!",
+    "{:.0%} - review the reference materials carefully!",
+    "{:.0%} - don't be discouraged, persistence pays off!",
+    "{:.0%} - take time to understand each concept step by step!",
+    "{:.0%} - practice makes perfect. Try again soon!",
+    "{:.0%} - this is an opportunity to learn and grow!",
+    "{:.0%} - focus on understanding, not just memorizing!",
+    "{:.0%} - put in more time and effort to improve!",
+    "{:.0%} - review, practice, and you'll get better!",
+]
+
+
+# =========================================================
 # ✅ LLM REMARK (for individual image evaluation)
 # =========================================================
 def generate_llm_remark(
@@ -206,10 +281,12 @@ def generate_llm_remark(
     student_text: str, 
     sim_score: float, 
     threshold: float,
-    completion_status: str = "N"
+    completion_status: str = "N",
+    unique_seed: str = ""
 ) -> str:
     """
     Generate AI-generated remark using OpenAI API for individual image evaluation.
+    unique_seed ensures different outputs even for identical inputs.
     """
     if client is None:
         return "AI remark generation unavailable (OpenAI API key not configured)."
@@ -221,24 +298,24 @@ def generate_llm_remark(
     # Determine if individual answer passed
     passed = sim_score >= threshold
     
-    # System prompt for consistent but varied responses
+    # System prompt for maximum variation
     system_prompt = (
-        "You are an experienced, encouraging teacher providing feedback on student homework. "
-        "Generate a unique, personalized remark for each student submission. "
-        "Vary your phrasing and tone each time while maintaining educational value. "
-        "Be constructive, specific, and motivating. "
-        "Keep the remark concise (15-25 words)."
+        "You are a creative teacher giving unique feedback each time. "
+        "CRITICAL: You MUST create COMPLETELY DIFFERENT responses for each submission. "
+        "Never repeat the same words, phrases, or structure. "
+        "Use different metaphors, emojis, encouragement styles, and expressions. "
+        "Keep it concise but always fresh and unique."
     )
     
-    # User prompt with context
+    # User prompt with unique_seed
     user_prompt = (
-        f"Teacher reference text (excerpt):\n{teacher_excerpt}\n\n"
-        f"Student answer text (excerpt):\n{student_excerpt}\n\n"
-        f"Similarity score: {sim_score:.2f} (Threshold: {threshold})\n"
-        f"Status: {'PASSED' if passed else 'NEEDS IMPROVEMENT'}\n\n"
-        "Provide a unique, encouraging remark that helps the student understand "
-        "what they did well and how they can improve. "
-        "Make it different from standard template responses."
+        f"SEED: {unique_seed} - USE THIS TO CREATE A UNIQUE RESPONSE\n\n"
+        f"Teacher's answer:\n{teacher_excerpt}\n\n"
+        f"Student's answer:\n{student_excerpt}\n\n"
+        f"Score: {sim_score:.0%} (need {threshold:.0%} to pass)\n"
+        f"Result: {'🎉 PERFECT!' if passed else '📚 Keep learning!'}\n\n"
+        "Create a unique, different response every time. "
+        "Use different words, emojis, and encouragement style than any previous response."
     )
 
     try:
@@ -248,18 +325,18 @@ def generate_llm_remark(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=60,
-            temperature=0.8,  # Higher temperature for more varied responses
+            max_tokens=80,
+            temperature=2.0,  # Maximum randomness
         )
         remark = (resp.choices[0].message.content or "").strip()
-        return remark if remark else "Great effort! Keep working to improve your understanding."
+        return remark if remark else "🌟 Great effort! Keep learning!"
     except Exception as e:
         print(f"OpenAI API error for individual remark: {e}")
-        return "Thank you for your submission. Your work has been reviewed."
+        return "Your work has been submitted for review."
 
 
 # =========================================================
-# ✅ LLM SUBMISSION REMARK (overall submission feedback) - ALWAYS AI GENERATED
+# ✅ LLM SUBMISSION REMARK (overall submission feedback)
 # =========================================================
 def generate_llm_submission_remark(
     teacher_text: str,
@@ -270,22 +347,21 @@ def generate_llm_submission_remark(
     student_id: int,
     homework_id: int,
     homework_title: str,
-    submission_date: str
+    submission_date: str,
+    unique_seed: str = ""
 ) -> str:
     """
-    Generate overall submission remarks using OpenAI API ONLY.
-    Evaluates how well student submission MATCHES the teacher's reference image.
+    Generate overall submission remarks using OpenAI API.
+    unique_seed ensures different outputs even for identical inputs.
     """
     if client is None:
-        return "AI feedback unavailable. Your submission has been graded based on similarity."
-    
+        return "AI feedback unavailable."
+
     if not student_texts:
-        return "No submission found to evaluate."
-    
-    # Prepare context for the AI - FOCUS ON MATCHING
+        return "No submission found."
+
     teacher_excerpt = (teacher_text or "")[:800]
     
-    # Analyze matching scores
     num_images = len(student_texts)
     if scores and num_images > 0:
         avg_score = sum(scores) / num_images
@@ -296,44 +372,41 @@ def generate_llm_submission_remark(
         passed_count = 0
         pass_rate = 0
     
-    # Prepare student text samples with match status
     student_samples = []
     for i, (text, score) in enumerate(zip(student_texts, scores), 1):
         text_excerpt = (text or "")[:80].strip()
         if text_excerpt:
             pct = int(score * 100)
-            student_samples.append(f"Part {i}: {pct}% match - \"{text_excerpt}\"")
+            student_samples.append(f"Part {i}: {pct}% match")
     
-    # System prompt - AI generates everything based on match score
+    # System prompt - MAXIMUM UNIQUENESS
     system_prompt = (
-        "You are an intelligent homework grading assistant. "
-        "Evaluate the student's submission based on how well it MATCHES the teacher's reference. "
-        "Generate a unique, specific feedback message for each submission. "
-        "Based on the match percentage, explain what the student did well or what they're missing. "
-        "Be encouraging but honest. Keep feedback between 30-50 words."
+        "You are a creative feedback assistant. CRITICAL TASK: "
+        "Generate a COMPLETELY UNIQUE feedback message every single time. "
+        "NEVER repeat words, phrases, sentence structures, or feedback patterns. "
+        "Use different emojis, metaphors, encouragement styles, and expressions. "
+        "If you gave feedback before, make this one TOTALLY DIFFERENT. "
+        "Maximum creativity required!"
     )
     
-    # User prompt - let AI interpret the match score
+    # User prompt - FORCE variation
     user_prompt = (
-        f"HOMEWORK EVALUATION\n"
-        f"Student: {student_id} | Homework: {homework_id} | Title: {homework_title or 'N/A'}\n\n"
-        f"TEACHER REFERENCE (correct answer):\n{teacher_excerpt[:600]}\n\n"
-        f"RESULTS:\n"
-        f"• Average Match: {avg_score:.0%} (threshold: {threshold:.0%})\n"
-        f"• Passed: {passed_count}/{num_images} ({pass_rate:.0f}%)\n"
-        f"• Overall: {'PASSED' if completion_status == 'Y' else 'NEEDS IMPROVEMENT'}\n\n"
+        f"🌟 UNIQUE SEED: {unique_seed} - THIS MAKES EVERY RESPONSE DIFFERENT 🌟\n\n"
+        f"Homework: {homework_title or 'Assignment'} | Student: {student_id}\n"
+        f"Teacher's correct answer (excerpt):\n{teacher_excerpt[:500]}\n\n"
+        f"📊 RESULTS:\n"
+        f"• Average match: {avg_score:.0%} (threshold: {threshold:.0%})\n"
+        f"• Parts passed: {passed_count}/{num_images}\n"
+        f"• Status: {'✅ COMPLETE!' if completion_status == 'Y' else '📝 IN PROGRESS'}\n\n"
     )
     
     if student_samples:
-        user_prompt += "STUDENT SUBMISSIONS:\n" + "\n".join(student_samples[:4]) + "\n\n"
+        user_prompt += "📋 Details: " + " | ".join(student_samples) + "\n\n"
     
     user_prompt += (
-        "FEEDBACK:\n"
-        f"Based on the {avg_score:.0%} match, provide specific feedback about the student's answer. "
-        f"If {avg_score:.0%} is high (above 75%), praise accuracy and completeness. "
-        f"If {avg_score:.0%} is medium (50-75%), mention what's partially correct and what's missing. "
-        f"If {avg_score:.0%} is low (below 50%), clearly explain what key points from the teacher's reference are missing. "
-        "Be specific about content coverage."
+        "🎯 YOUR TASK: Give unique, creative feedback that is DIFFERENT from any previous response. "
+        "Use new words, different emojis, varied encouragement style. "
+        "Make each submission feel special and one-of-a-kind!"
     )
 
     try:
@@ -343,14 +416,27 @@ def generate_llm_submission_remark(
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            max_tokens=100,
-            temperature=0.7,
+            max_tokens=120,
+            temperature=2.0,  # Maximum randomness for unique responses
         )
         remark = (resp.choices[0].message.content or "").strip()
-        return remark if remark else f"Match score: {avg_score:.0%}. Review individual feedback for details."
+        if remark:
+            return remark
     except Exception as e:
         print(f"OpenAI error: {e}")
-        return f"Match score: {avg_score:.0%}. Review individual feedback for details."
+    
+    # Score-appropriate fallback messages (20 options per category)
+    if avg_score >= 0.8:
+        fallbacks = HIGH_SCORE_MESSAGES
+    elif avg_score >= 0.5:
+        fallbacks = MEDIUM_SCORE_MESSAGES
+    else:
+        fallbacks = LOW_SCORE_MESSAGES
+    
+    # Select message based on unique_seed hash for consistency
+    import random
+    selected_index = hash(unique_seed) % len(fallbacks)
+    return fallbacks[selected_index].format(avg_score)
 
 
 # =========================================================
@@ -406,14 +492,20 @@ async def submit(
         if score is not None:
             scores.append(float(score))
     
-    # Calculate completion_status based on all scores
+    # Generate unique seeds for different remarks
+    submission_seed = f"{datetime.now().isoformat()}_{uuid.uuid4().hex[:12]}"
+    
+    # Calculate completion_status
     calculated_completion_status = "Y" if scores and all(s >= threshold_f for s in scores) else "N"
     
-    # Second pass: generate individual remarks for each image
+    # Second pass: generate individual remarks
     for i, img in enumerate(images):
         grading = gradings[i]
         student_text = student_texts[i]
         score = grading.get("overall_score")
+        
+        # Generate unique seed for each image
+        image_seed = f"{datetime.now().isoformat()}_{uuid.uuid4().hex[:12]}"
         
         if score is None:
             remark = "Unable to evaluate: reference or answer text is not readable."
@@ -423,7 +515,8 @@ async def submit(
                 student_text, 
                 float(score), 
                 threshold_f, 
-                completion_status=calculated_completion_status
+                completion_status=calculated_completion_status,
+                unique_seed=image_seed
             )
 
         remarks.append(remark)
@@ -434,7 +527,7 @@ async def submit(
             "ai_generated_remark": remark,
         })
     
-    # ALWAYS generate submission remarks using OpenAI
+    # Generate submission remarks
     submission_remarks = generate_llm_submission_remark(
         teacher_text=teacher_text,
         student_texts=student_texts,
@@ -444,10 +537,11 @@ async def submit(
         student_id=student_id,
         homework_id=homework_id,
         homework_title=student_rec.get("title", ""),
-        submission_date=student_rec.get("date", "")
+        submission_date=student_rec.get("date", ""),
+        unique_seed=submission_seed
     )
     
-    # Log the AI-generated submission remark for debugging
+    # Log the remark
     print(f"\n{'='*60}")
     print(f"AI GENERATED SUBMISSION REMARK:")
     print(f"{'='*60}")
@@ -461,10 +555,10 @@ async def submit(
         "date": student_rec.get("date"),
         "completion_status": student_rec.get("completion_status"),
         "calculated_completion_status": calculated_completion_status,
-        "submission_remarks": submission_remarks,  # Always AI-generated
+        "submission_remarks": submission_remarks,
         "teacher_image": teacher_filename,
         "teacher_url": teacher_url,
         "files_processed": len(images),
         "extracted_data": extracted_data,
-        "message": "All remarks generated by OpenAI LLM (no template fallbacks).",
+        "message": "All remarks generated with unique responses each time!",
     }
