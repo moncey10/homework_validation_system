@@ -6,3 +6,9 @@ sqlalchemy
 scikit-learn
 requests
 python-multipart
+openai
+google-generativeai
+python-docx
+pypdf
+pdf2image
+python-dotenv
