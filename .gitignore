@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environment
+myenv/
+venv/
+
+# Database
+*.db
+
+# OS junk
+.DS_Store
+Thumbs.db
+*.db
+answer_key.json
+*.pdf
+__pycache__/
+*.pyc
+.env
+myenv/
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.db
+homework.db
+_local_backup/
