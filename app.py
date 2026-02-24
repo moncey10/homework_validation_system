@@ -249,8 +249,8 @@ def keypoint_coverage(student_text: str, key_points: List[str], kp_threshold: fl
 def infer_question_type_from_prompt(prompt: str) -> str:
     p = _norm(prompt)
 
-    # Explicit markers (recommended)
-    if re.search(r"\btype\s*:\s*mcq\b", p) or re.search(r"\bquestion_type\s*:\s*mcq\b", p):
+    # Explicit markers - check for (mcq) first since it's common in parentheses
+    if re.search(r"\(mcq\)", p) or re.search(r"\btype\s*:\s*mcq\b", p) or re.search(r"\bquestion_type\s*:\s*mcq\b", p):
         return "mcq"
     if re.search(r"\btype\s*:\s*narrative\b", p) or re.search(r"\bquestion_type\s*:\s*narrative\b", p):
         return "narrative"
@@ -260,6 +260,88 @@ def infer_question_type_from_prompt(prompt: str) -> str:
         return "mcq"
 
     return "narrative"
+
+
+def parse_questions_from_prompt(prompt: str) -> List[Dict[str, Any]]:
+    """
+    Parse individual questions from the prompt, detecting MCQ vs Narrative for each.
+    Returns list of dicts with: qid, type, question_text, correct_answer (for MCQ)
+    """
+    questions = []
+    # Match patterns like "Q1:", "Q2.", "Question 1:", etc.
+    q_pattern = re.compile(r'(Q\s*\d+[.:]\s*|Question\s*\d+[.:]\s*)(.*?)(?=(Q\s*\d|Question\s*\d|$))', re.IGNORECASE | re.DOTALL)
+    
+    # Alternative: split by Q1, Q2, etc.
+    lines = prompt.split('\n')
+    current_q = None
+    current_type = None
+    current_qid = None
+    current_correct = None
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Detect new question
+        q_match = re.match(r'^(Q\s*\d+|Question\s*\d+)[.:]\s*(.*)', line, re.IGNORECASE)
+        if q_match:
+            # Save previous question if exists
+            if current_q is not None:
+                questions.append({
+                    'qid': current_qid,
+                    'type': current_type,
+                    'question': current_q,
+                    'correct_answer': current_correct
+                })
+            # Start new question
+            current_qid = q_match.group(1).strip()
+            remaining = q_match.group(2).strip()
+            current_q = remaining
+            current_type = None
+            current_correct = None
+            
+            # Check if this is MCQ or Narrative
+            line_lower = line.lower()
+            if '(mcq)' in line_lower or 'multiple choice' in line_lower or 'type: mcq' in line_lower:
+                current_type = 'mcq'
+            elif 'narrative' in line_lower or 'type: narrative' in line_lower:
+                current_type = 'narrative'
+        else:
+            # This line belongs to current question
+            if current_q is not None:
+                current_q += ' ' + line
+                
+                # Check for type markers
+                line_lower = line.lower()
+                if current_type is None:
+                    if '(mcq)' in line_lower or 'multiple choice' in line_lower or 'type: mcq' in line_lower:
+                        current_type = 'mcq'
+                    elif 'narrative' in line_lower or 'type: narrative' in line_lower:
+                        current_type = 'narrative'
+                
+                # Check for correct answer (for MCQ)
+                if current_type == 'mcq':
+                    # Look for "Correct Answer(s):" or "Correct:" or "Answer:"
+                    correct_match = re.search(r'(?:Correct\s*(?:Answer)?|Answer)[:.]\s*(?:[A-D]\.?\s*)?(.+)', line, re.IGNORECASE)
+                    if correct_match and not current_correct:
+                        current_correct = correct_match.group(1).strip()
+    
+    # Don't forget the last question
+    if current_q is not None:
+        questions.append({
+            'qid': current_qid,
+            'type': current_type,
+            'question': current_q,
+            'correct_answer': current_correct
+        })
+    
+    # If no questions parsed, fall back to old behavior
+    if not questions:
+        qtype = infer_question_type_from_prompt(prompt)
+        return [{'qid': 'Q1', 'type': qtype, 'question': prompt, 'correct_answer': None}]
+    
+    return questions
 
 
 def extract_mcq_choice(text: str) -> str:
@@ -555,7 +637,20 @@ async def homework_validate(
     policy = level_policy(student_level)
 
     # 1) Infer question_type from prompt automatically (NO EXTRA FIELD)
-    question_type = infer_question_type_from_prompt(prompt)
+    # Try to parse mixed questions first
+    parsed_questions = parse_questions_from_prompt(prompt)
+    has_mcq = any(q.get('type') == 'mcq' for q in parsed_questions)
+    has_narrative = any(q.get('type') == 'narrative' for q in parsed_questions)
+    
+    # Determine overall question type for backwards compatibility
+    if has_mcq and has_narrative:
+        question_type = "mixed"
+    elif has_mcq:
+        question_type = "mcq"
+    elif has_narrative:
+        question_type = "narrative"
+    else:
+        question_type = infer_question_type_from_prompt(prompt)
 
     # 2) Extract student text
     student_info = await extract_text_from_upload(student_file)
@@ -597,9 +692,127 @@ async def homework_validate(
         }
 
     # =========================================================
-    # ✅ MCQ CHECK (deterministic, no Gemini)
+    # ✅ MIXED QUESTION TYPES CHECK (MCQ + Narrative)
     # =========================================================
-    if question_type == "mcq":
+    if question_type == "mixed":
+        # Process each question type separately and combine results
+        mcq_results = []
+        narrative_results = []
+        
+        # Extract MCQ answers from student text for each MCQ question
+        for q in parsed_questions:
+            if q.get('type') == 'mcq':
+                # Try to find answer for this specific question in student's text
+                # Use the question text to help locate the answer
+                q_text = q.get('question', '')
+                chosen = extract_mcq_choice(student_text)
+                correct = q.get('correct_answer') or extract_correct_mcq_from_prompt(q.get('question', ''))
+                
+                if correct and chosen:
+                    is_correct = (chosen.lower().strip() == correct.lower().strip())
+                    mcq_results.append({
+                        'qid': q.get('qid'),
+                        'correct': is_correct,
+                        'chosen': chosen,
+                        'correct_answer': correct
+                    })
+        
+        # For narrative questions, use AI to generate reference
+        narrative_questions = [q for q in parsed_questions if q.get('type') == 'narrative']
+        
+        if narrative_questions and gemini_client:
+            # Combine narrative questions into one prompt for AI
+            narrative_prompt_text = "\n".join([
+                f"{q.get('qid')}: {q.get('question')}" for q in narrative_questions
+            ])
+            
+            ai_prompt = (
+                f"STUDENT_LEVEL: {student_level}\n"
+                f"QUESTIONS:\n{narrative_prompt_text}\n\n"
+                'Return ONLY valid JSON with keys: {"ai_reference_answer": string, "key_points": [string, ...]}.'
+            )
+            
+            response_text = generate_gemini_response(
+                prompt=ai_prompt,
+                system_prompt=(
+                    "Generate correct reference answers for homework evaluation. "
+                    "Keep it aligned with the student level. Output strict JSON only."
+                ),
+                max_tokens=650,
+                temperature=0.3,
+            )
+            
+            if response_text:
+                try:
+                    m = re.search(r'\{.*\}', response_text, flags=re.S)
+                    payload = json.loads(m.group(0) if m else response_text)
+                    
+                    ai_reference_answer = (payload.get("ai_reference_answer") or "").strip()
+                    key_points = payload.get("key_points") or []
+                    
+                    if isinstance(key_points, list):
+                        key_points = [str(x).strip() for x in key_points if str(x).strip()]
+                    
+                    sim = cosine_sim(student_text, ai_reference_answer)
+                    covered, missing, coverage = keypoint_coverage(
+                        student_text, key_points, kp_threshold=policy["kp_thr"]
+                    )
+                    
+                    final = policy["w_sim"] * sim + policy["w_cov"] * coverage
+                    match_pct = int(round(final * 100))
+                    
+                    narrative_results = {
+                        'similarity': sim,
+                        'coverage': coverage,
+                        'match_percentage': match_pct,
+                        'key_points_covered': covered,
+                        'key_points_missing': missing
+                    }
+                except Exception as e:
+                    narrative_results = {'error': str(e)}
+        
+        # Calculate combined score
+        total_mcq = len(mcq_results)
+        correct_mcq = sum(1 for r in mcq_results if r.get('correct'))
+        mcq_score = (correct_mcq / total_mcq * 100) if total_mcq > 0 else 0
+        
+        narrative_score = narrative_results.get('match_percentage', 0) if narrative_results else 0
+        
+        # Weight: 50% MCQ, 50% Narrative (if both exist)
+        if total_mcq > 0 and narrative_results and 'error' not in narrative_results:
+            final_score = int((mcq_score + narrative_score) / 2)
+        elif total_mcq > 0:
+            final_score = mcq_score
+        elif narrative_results and 'error' not in narrative_results:
+            final_score = narrative_score
+        else:
+            final_score = 0
+        
+        # Determine status
+        if final_score >= policy["verified"]:
+            status = "Verified"
+        elif final_score >= policy["partial"]:
+            status = "Partial"
+        else:
+            status = "Needs Review"
+        
+        return {
+            "student_id": student_id,
+            "homework_id": homework_id,
+            "sub_institute_id": sub_institute_id,
+            "syear": syear,
+            "question_type": "mixed",
+            "student_level": student_level,
+            "status": status,
+            "match_percentage": final_score,
+            "ai_generated_remark": None,
+            "rule_based_remark": f"MCQ: {correct_mcq}/{total_mcq} correct. Narrative score: {narrative_score}%.",
+            "llm_used": bool(narrative_results and 'error' not in narrative_results),
+            "student_extracted_text": student_text,
+            "mcq_results": mcq_results,
+            "narrative_results": narrative_results,
+            "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
+        }
         correct = extract_correct_mcq_from_prompt(prompt)
         chosen = extract_mcq_choice(student_text)
 
