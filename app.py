@@ -61,6 +61,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+import os
+
+@app.get("/debug/env")
+def debug_env():
+    return {
+        "has_gemini_key": bool(os.getenv("GEMINI_API_KEY")),
+        "has_openai_key": bool(os.getenv("OPENAI_API_KEY")),
+    }
 
 
 if os.name == "nt":
