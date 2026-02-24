@@ -5,13 +5,12 @@ pillow
 sqlalchemy
 scikit-learn
 requests
-<<<<<<< HEAD
+
 openai
 python-docx
 google-genai
 python-dotenv
 pypdf
-=======
 python-multipart
 openai
 google-generativeai
@@ -22,4 +21,3 @@ pypdf
 pdf2image
 python-dotenv
 google-genai
->>>>>>> 62488ea57bd9d96e9237e25b1b41b81a5eccc0e9
