@@ -54,13 +54,7 @@ except Exception as e:
 
 
 app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+
 import os
 
 @app.get("/debug/env")
@@ -69,6 +63,14 @@ def debug_env():
         "has_gemini_key": bool(os.getenv("GEMINI_API_KEY")),
         "has_openai_key": bool(os.getenv("OPENAI_API_KEY")),
     }
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 
 if os.name == "nt":
