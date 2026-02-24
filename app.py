@@ -1936,8 +1936,8 @@ async def homework_validate(
 
         if question_type == "mixed":
         # Process each question type separately and combine results
-        mcq_results = []
-        narrative_results = []
+         mcq_results = []
+         narrative_results = []
         
         # Extract ALL MCQ answers from student text with question numbers
         student_answers_by_qid = extract_mcq_answers_with_qid(student_text)
