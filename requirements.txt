@@ -14,3 +14,4 @@ python-docx
 pypdf
 pdf2image
 python-dotenv
+google-genai
