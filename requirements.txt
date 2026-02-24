@@ -8,3 +8,4 @@ sqlalchemy
 requests
 openai
 python-dotenv
+python-docx
