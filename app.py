@@ -881,6 +881,11 @@ async def homework_validate(
     erp_row = fetch_student_record(homework_id, student_id)
     student_level = fetch_student_level_from_erp(erp_row)
     policy = level_policy(student_level)
+    # Decide final question type: respect request value if valid, else infer
+    final_question_type = (question_type or "").strip().lower()
+    if final_question_type not in ("mcq", "narrative", "mixed"):
+      final_question_type = infer_question_type_from_prompt(prompt)
+
 
     # 1) Infer question_type from prompt automatically (NO EXTRA FIELD)
     # Try to parse mixed questions first
@@ -889,20 +894,19 @@ async def homework_validate(
     has_narrative = any(q.get('type') == 'narrative' for q in parsed_questions)
     
     # Infer question type from prompt
-    question_type = infer_question_type_from_prompt(prompt)
 
     # 2) Extract student text
     student_info = await extract_text_from_upload(student_file)
     student_text = (student_info.get("text") or "").strip()
 
-    MIN_WORDS = 3 if question_type == "mcq" else 8
+    MIN_WORDS = 3 if final_question_type == "mcq" else 8
     if len(student_text.split()) < MIN_WORDS:
         return {
             "student_id": student_id,
             "homework_id": homework_id,
             "sub_institute_id": sub_institute_id,
             "syear": syear,
-            "question_type": question_type,
+            "question_type": final_question_type,
             "student_level": student_level,
             "status": "Unreadable",
             "match_percentage": 0,
@@ -919,7 +923,7 @@ async def homework_validate(
             "homework_id": homework_id,
             "sub_institute_id": sub_institute_id,
             "syear": syear,
-            "question_type": question_type,
+            "question_type": final_question_type,
             "student_level": student_level,
             "status": "Unreadable",
             "match_percentage": 0,
@@ -931,7 +935,7 @@ async def homework_validate(
         }
 
     
-    if question_type == "mixed":
+    if final_question_type == "mixed":
         # Process each question type separately and combine results
         mcq_results = []
         narrative_results = []
@@ -1072,7 +1076,7 @@ async def homework_validate(
             },
         }
 
-    elif question_type == "mcq":
+    elif final_question_type == "mcq":
         correct = extract_correct_mcq_from_prompt(prompt)
         chosen = extract_mcq_choice(student_text)
         
@@ -1090,7 +1094,7 @@ async def homework_validate(
 
         # If answer looks like narrative, redirect to narrative processing
         if answer_looks_like_narrative and gemini_client:
-            question_type = "narrative"
+            final_question_type = "narrative"
             redirect_to_narrative = True
         else:
             redirect_to_narrative = False
