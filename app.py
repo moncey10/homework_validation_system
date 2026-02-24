@@ -1880,6 +1880,8 @@ async def homework_validate(
     student_id: int = Form(...),
     homework_id: int = Form(...),
     sub_institute_id: int = Form(...),
+    question_type: str = Form("narrative"),
+    student_level: str = Form("Medium"),
     syear: str = Form(...),
     prompt: str = Form(...),
     student_file: UploadFile = File(...),
