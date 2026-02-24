@@ -888,14 +888,8 @@ async def homework_validate(
     has_mcq = any(q.get('type') == 'mcq' for q in parsed_questions)
     has_narrative = any(q.get('type') == 'narrative' for q in parsed_questions)
     
-    # Determine overall question type for backwards compatibility
-    # 1) Use question_type from request if provided; otherwise infer
-    # Respect user-provided question_type if valid
-    if question_type:
-      question_type = question_type.strip().lower()
-
-    if question_type not in ("mcq", "narrative", "mixed"):
-       question_type = infer_question_type_from_prompt(prompt)
+    # Infer question type from prompt
+    question_type = infer_question_type_from_prompt(prompt)
 
     # 2) Extract student text
     student_info = await extract_text_from_upload(student_file)
