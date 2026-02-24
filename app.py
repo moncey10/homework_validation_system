@@ -52,9 +52,7 @@ except Exception as e:
     print(f"[WARN] google-cloud-vision import failed: {e}")
 
 
-# =========================================================
-# ✅ FASTAPI APP INSTANCE
-# =========================================================
+
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
@@ -64,34 +62,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# =========================================================
-# ✅ TESSERACT PATH
-# =========================================================
+
 if os.name == "nt":
     pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 else:
     pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
 
-# =========================================================
-# ✅ ERP CONFIG
-# =========================================================
+
 ERP_BASE = os.getenv("ERP_BASE", "https://erp.triz.co.in/lms_data")
 STORAGE_BASE = os.getenv("STORAGE_BASE", "https://erp.triz.co.in/storage/student/")
 ERP_TOKEN = os.getenv("ERP_TOKEN", "")
 
 
-# =========================================================
-# ✅ GEMINI CONFIG
-# =========================================================
+
 GOOGLE_API_KEY = (os.getenv("GOOGLE_API_KEY") or "").strip()
 GEMINI_MODEL = (os.getenv("GEMINI_MODEL", "models/gemini-flash-lite-latest") or "").strip()
 if GEMINI_MODEL and not GEMINI_MODEL.startswith("models/"):
     GEMINI_MODEL = "models/" + GEMINI_MODEL
 
-# =========================================================
-# ✅ GOOGLE CLOUD VISION CONFIG (for handwritten OCR)
-# =========================================================
+
 GOOGLE_CLOUD_VISION_API_KEY = (os.getenv("GCV_API_KEY") or "").strip()
 # Fall back to Gemini API key if no separate Vision key provided
 if not GOOGLE_CLOUD_VISION_API_KEY and GOOGLE_API_KEY:
@@ -218,9 +208,7 @@ def cheap_overlap_score(student_text: str, prompt: str) -> int:
     return int(round(min(0.6, overlap) * 100))  # cap at 60
 
 
-# =========================================================
-# ✅ SMALL UTILS
-# =========================================================
+
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip().lower())
 
@@ -292,9 +280,7 @@ def keypoint_coverage(student_text: str, key_points: List[str], kp_threshold: fl
     return covered, missing, coverage
 
 
-# =========================================================
-# ✅ QUESTION TYPE INFERENCE + MCQ PARSING
-# =========================================================
+
 def infer_question_type_from_prompt(prompt: str) -> str:
     p = _norm(prompt)
 
@@ -563,9 +549,7 @@ def extract_correct_mcq_from_prompt(prompt: str) -> str:
     return ""
 
 
-# =========================================================
-# ✅ ERP HELPERS
-# =========================================================
+
 def _erp_get(params: dict) -> list:
     headers = {}
     if ERP_TOKEN:
@@ -597,9 +581,7 @@ def fetch_student_level_from_erp(row: Dict[str, Any]) -> str:
     return "Medium"
 
 
-# =========================================================
-# ✅ OCR + TEXT EXTRACTION - IMPROVED FOR HANDWRITTEN
-# =========================================================
+
 def _preprocess_for_ocr(img: Image.Image) -> Image.Image:
     """
     Enhanced preprocessing for better OCR on handwritten images.
@@ -856,9 +838,7 @@ async def extract_text_from_upload(file: UploadFile) -> Dict[str, Any]:
 
 
 
-# =========================================================
-# ✅ ROUTES
-# =========================================================
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -947,9 +927,7 @@ async def homework_validate(
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
-    # =========================================================
-    # ✅ MIXED QUESTION TYPES CHECK (MCQ + Narrative)
-    # =========================================================
+    
     if question_type == "mixed":
         # Process each question type separately and combine results
         mcq_results = []
@@ -1263,9 +1241,7 @@ async def homework_validate(
                 "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
             }
 
-    # =========================================================
-    # ✅ NARRATIVE CHECK (Gemini generates reference) - Also handles MCQ->Narrative redirect
-    # =========================================================
+ 
     if gemini_client is None:
         return {
             "student_id": student_id,
@@ -1580,9 +1556,7 @@ def extract_correct_mcq_from_prompt(prompt: str) -> str:
     return ""
 
 
-# =========================================================
-# ✅ ERP HELPERS
-# =========================================================
+
 def _erp_get(params: dict) -> list:
     headers = {}
     if ERP_TOKEN:
@@ -1614,9 +1588,7 @@ def fetch_student_level_from_erp(row: Dict[str, Any]) -> str:
     return "Medium"
 
 
-# =========================================================
-# ✅ OCR + TEXT EXTRACTION - IMPROVED FOR HANDWRITTEN
-# =========================================================
+
 def _preprocess_for_ocr(img: Image.Image) -> Image.Image:
     """
     Enhanced preprocessing for better OCR on handwritten images.
@@ -1873,9 +1845,7 @@ async def extract_text_from_upload(file: UploadFile) -> Dict[str, Any]:
 
 
 
-# =========================================================
-# ✅ ROUTES
-# =========================================================
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -1964,10 +1934,7 @@ async def homework_validate(
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
-    # =========================================================
-    # ✅ MIXED QUESTION TYPES CHECK (MCQ + Narrative)
-    # =========================================================
-    if question_type == "mixed":
+        if question_type == "mixed":
         # Process each question type separately and combine results
         mcq_results = []
         narrative_results = []
@@ -2280,9 +2247,7 @@ async def homework_validate(
                 "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
             }
 
-    # =========================================================
-    # ✅ NARRATIVE CHECK (Gemini generates reference) - Also handles MCQ->Narrative redirect
-    # =========================================================
+    
     if gemini_client is None:
         return {
             "student_id": student_id,
@@ -2453,7 +2418,7 @@ async def homework_validate(
         },
         "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
     }
-=======
+
 # app.py
 import os
 import io
@@ -2536,17 +2501,14 @@ STORAGE_BASE = os.getenv("STORAGE_BASE", "https://erp.triz.co.in/storage/student
 ERP_TOKEN = os.getenv("ERP_TOKEN", "")
 
 
-# =========================================================
-# ✅ GEMINI CONFIG
-# =========================================================
+
 GOOGLE_API_KEY = (os.getenv("GOOGLE_API_KEY") or "").strip()
 GEMINI_MODEL = (os.getenv("GEMINI_MODEL", "models/gemini-flash-lite-latest") or "").strip()
 if GEMINI_MODEL and not GEMINI_MODEL.startswith("models/"):
     GEMINI_MODEL = "models/" + GEMINI_MODEL
 
-# =========================================================
-# ✅ GOOGLE CLOUD VISION CONFIG (for handwritten OCR)
-# =========================================================
+
+
 GOOGLE_CLOUD_VISION_API_KEY = (os.getenv("GCV_API_KEY") or "").strip()
 # Fall back to Gemini API key if no separate Vision key provided
 if not GOOGLE_CLOUD_VISION_API_KEY and GOOGLE_API_KEY:
@@ -2673,9 +2635,7 @@ def cheap_overlap_score(student_text: str, prompt: str) -> int:
     return int(round(min(0.6, overlap) * 100))  # cap at 60
 
 
-# =========================================================
-# ✅ SMALL UTILS
-# =========================================================
+
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip().lower())
 
@@ -2979,9 +2939,6 @@ def extract_correct_mcq_from_prompt(prompt: str) -> str:
     return ""
 
 
-# =========================================================
-# ✅ ERP HELPERS
-# =========================================================
 def _erp_get(params: dict) -> list:
     headers = {}
     if ERP_TOKEN:
@@ -3013,9 +2970,7 @@ def fetch_student_level_from_erp(row: Dict[str, Any]) -> str:
     return "Medium"
 
 
-# =========================================================
-# ✅ OCR + TEXT EXTRACTION - IMPROVED FOR HANDWRITTEN
-# =========================================================
+
 def _preprocess_for_ocr(img: Image.Image) -> Image.Image:
     """
     Enhanced preprocessing for better OCR on handwritten images.
@@ -3272,9 +3227,7 @@ async def extract_text_from_upload(file: UploadFile) -> Dict[str, Any]:
 
 
 
-# =========================================================
-# ✅ ROUTES
-# =========================================================
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -3363,9 +3316,7 @@ async def homework_validate(
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
-    # =========================================================
-    # ✅ MIXED QUESTION TYPES CHECK (MCQ + Narrative)
-    # =========================================================
+
     if question_type == "mixed":
         # Process each question type separately and combine results
         mcq_results = []
@@ -3679,9 +3630,7 @@ async def homework_validate(
                 "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
             }
 
-    # =========================================================
-    # ✅ NARRATIVE CHECK (Gemini generates reference) - Also handles MCQ->Narrative redirect
-    # =========================================================
+    
     if gemini_client is None:
         return {
             "student_id": student_id,
