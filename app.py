@@ -1,8 +1,9 @@
+# app.py
 import os
 import io
 import re
 import json
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Tuple
 
 import requests
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
@@ -32,7 +33,8 @@ except Exception:
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 
-# ✅ NEW Gemini SDK
+
+# ✅ Gemini SDK
 try:
     from google import genai
 except Exception as e:
@@ -70,51 +72,18 @@ ERP_TOKEN = os.getenv("ERP_TOKEN", "")
 
 
 # =========================================================
-# ✅ ANSWER KEY (OPTIONAL)
-# =========================================================
-ANSWER_KEY_PATH = os.getenv("ANSWER_KEY_PATH", "answer_key.json")
-
-def _load_answer_key() -> dict:
-    try:
-        with open(ANSWER_KEY_PATH, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"[WARN] Could not load {ANSWER_KEY_PATH}: {e}")
-        return {}
-
-ANSWER_KEY = _load_answer_key()
-
-def get_manual_reference_answer(homework_id: int) -> str:
-    candidates = [f"hw{homework_id:02d}", f"hw{homework_id}"]
-    for key in candidates:
-        hw = ANSWER_KEY.get(key)
-        if hw and isinstance(hw.get("questions"), list):
-            answers = []
-            for q in hw["questions"]:
-                ans = (q.get("answer") or "").strip()
-                if ans:
-                    answers.append(ans)
-            if answers:
-                return "\n".join(answers)
-    return ""
-
-
-# =========================================================
-# ✅ GOOGLE GEMINI CONFIG (AI STUDIO KEY)
+# ✅ GEMINI CONFIG
 # =========================================================
 GOOGLE_API_KEY = (os.getenv("GOOGLE_API_KEY") or "").strip()
-print(f"[DEBUG] GOOGLE_API_KEY = '{GOOGLE_API_KEY}'")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "models/gemini-2.0-flash").strip()
-
-# Ensure correct prefix to avoid 404 model errors
+GEMINI_MODEL = (os.getenv("GEMINI_MODEL", "models/gemini-2.0-flash") or "").strip()
 if GEMINI_MODEL and not GEMINI_MODEL.startswith("models/"):
     GEMINI_MODEL = "models/" + GEMINI_MODEL
 
 gemini_client = None
 GEMINI_LAST_ERROR = ""
 
-def _init_gemini_client():
-    """Initialize Gemini client once per process."""
+
+def _init_gemini_client() -> None:
     global gemini_client, GEMINI_LAST_ERROR
 
     if gemini_client is not None:
@@ -139,48 +108,29 @@ def _init_gemini_client():
         GEMINI_LAST_ERROR = str(e)
         print(f"[WARN] Gemini init failed: {GEMINI_LAST_ERROR}")
 
+
 _init_gemini_client()
+
 
 def parse_gemini_error(error_msg: str) -> dict:
     msg = (error_msg or "").strip()
     lower = msg.lower()
 
     if "service_disabled" in lower or "generativelanguage.googleapis.com" in lower:
-        return {
-            "ok": False,
-            "error_type": "GEMINI_SERVICE_DISABLED",
-            "message": msg,
-            "fix_steps": [
-                "Create a new API key in Google AI Studio",
-                "Ensure the key is active and copied correctly into .env (GOOGLE_API_KEY=...)",
-                "If still failing: open the Google Cloud project behind the key and enable Billing",
-                "Enable Generative Language API (generativelanguage.googleapis.com) in that project",
-                "Temporarily remove API key restrictions and test again",
-            ],
-        }
+        return {"ok": False, "error_type": "GEMINI_SERVICE_DISABLED", "message": msg}
 
     if "api key" in lower or "invalid" in lower or "permission" in lower or "unauthorized" in lower:
-        return {
-            "ok": False,
-            "error_type": "GEMINI_KEY_OR_PERMISSION_ERROR",
-            "message": msg,
-            "fix_steps": [
-                "Regenerate / create a fresh key in Google AI Studio",
-                "Update .env GOOGLE_API_KEY",
-                "Restart uvicorn",
-                "Do NOT print API key in logs",
-            ],
-        }
+        return {"ok": False, "error_type": "GEMINI_KEY_OR_PERMISSION_ERROR", "message": msg}
 
     return {"ok": False, "error_type": "GEMINI_ERROR", "message": msg}
+
 
 def generate_gemini_response(
     prompt: str,
     system_prompt: str = "",
-    max_tokens: int = 500,
-    temperature: float = 0.7,
+    max_tokens: int = 650,
+    temperature: float = 0.3,
 ) -> str:
-    """Return response text or empty string. Sets GEMINI_LAST_ERROR on failure."""
     global GEMINI_LAST_ERROR
 
     if gemini_client is None:
@@ -197,21 +147,179 @@ def generate_gemini_response(
         resp = gemini_client.models.generate_content(
             model=GEMINI_MODEL,
             contents=contents,
-            config={
-                "temperature": temperature,
-                "max_output_tokens": max_tokens,
-            },
+            config={"temperature": temperature, "max_output_tokens": max_tokens},
         )
-        text = getattr(resp, "text", "") or ""
-        text = text.strip()
+        text = (getattr(resp, "text", "") or "").strip()
         if text:
             GEMINI_LAST_ERROR = ""
         return text
-
     except Exception as e:
         GEMINI_LAST_ERROR = str(e)
         print(f"[ERROR] Gemini call failed: {GEMINI_LAST_ERROR}")
         return ""
+
+import time
+
+def generate_gemini_with_retry(prompt: str, system_prompt: str, max_tokens=450, temperature=0.3, retries=3) -> str:
+    last = ""
+    for i in range(retries):
+        text = generate_gemini_response(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        if text:
+            return text
+        last = GEMINI_LAST_ERROR
+        # small backoff
+        time.sleep(1 + i)
+    return ""
+
+def cheap_overlap_score(student_text: str, prompt: str) -> int:
+    # remove tiny words
+    def tokens(s):
+        return {w for w in re.findall(r"[a-zA-Z]{4,}", (s or "").lower())}
+    s = tokens(student_text)
+    p = tokens(prompt)
+    if not s or not p:
+        return 0
+    overlap = len(s & p) / max(1, len(p))
+    # map to a sane range
+    return int(round(min(0.6, overlap) * 100))  # cap at 60
+
+
+# =========================================================
+# ✅ SMALL UTILS
+# =========================================================
+def _norm(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").strip().lower())
+
+
+def cosine_sim(a: str, b: str) -> float:
+    a = (a or "").strip().lower()
+    b = (b or "").strip().lower()
+    if not a or not b:
+        return 0.0
+    vec = TfidfVectorizer().fit([a, b])
+    X = vec.transform([a, b])
+    return float(cosine_similarity(X[0], X[1])[0][0])
+
+
+def normalize_level(level: str) -> str:
+    l = (level or "").strip().lower()
+    if l in ("easy",):
+        return "Easy"
+    if l in ("hard",):
+        return "Hard"
+    if l in ("meadium", "mediam", "medium"):
+        return "Medium"
+    return "Medium"
+
+
+def level_policy(student_level: str) -> dict:
+    lvl = normalize_level(student_level).lower()
+    if lvl == "easy":
+        return {"w_sim": 0.8, "w_cov": 0.2, "verified": 65, "partial": 40, "kp_thr": 0.25}
+    if lvl == "hard":
+        return {"w_sim": 0.4, "w_cov": 0.6, "verified": 85, "partial": 65, "kp_thr": 0.40}
+    return {"w_sim": 0.6, "w_cov": 0.4, "verified": 75, "partial": 55, "kp_thr": 0.20}
+
+
+def keypoint_coverage(student_text: str, key_points: List[str], kp_threshold: float) -> Tuple[List[str], List[str], float]:
+    covered, missing = [], []
+    for kp in key_points:
+        kp = (kp or "").strip()
+        if not kp:
+            continue
+        s = cosine_sim(kp, student_text)
+        if s >= kp_threshold:
+            covered.append(kp)
+        else:
+            missing.append(kp)
+
+    total = len(covered) + len(missing)
+    coverage = (len(covered) / total) if total else 0.0
+    return covered, missing, coverage
+
+
+# =========================================================
+# ✅ QUESTION TYPE INFERENCE + MCQ PARSING
+# =========================================================
+def infer_question_type_from_prompt(prompt: str) -> str:
+    p = _norm(prompt)
+
+    # Explicit markers (recommended)
+    if re.search(r"\btype\s*:\s*mcq\b", p) or re.search(r"\bquestion_type\s*:\s*mcq\b", p):
+        return "mcq"
+    if re.search(r"\btype\s*:\s*narrative\b", p) or re.search(r"\bquestion_type\s*:\s*narrative\b", p):
+        return "narrative"
+
+    # Heuristic: options A/B/C/D exist -> likely MCQ
+    if re.search(r"\b(a|b|c|d)\s*[\)\.]\s+", p) or "option a" in p or "option b" in p:
+        return "mcq"
+
+    return "narrative"
+
+
+def extract_mcq_choice(text: str) -> str:
+    """
+    Extract chosen option from student text:
+    supports: A, (B), Option C, Ans: D, Answer: B
+    """
+    t = _norm(text)
+
+    m = re.search(r"\b(answer|ans|selected)\s*[:\-]?\s*\(?\s*([a-d])\s*\)?\b", t)
+    if m:
+        return m.group(2)
+
+    m2 = re.search(r"\boption\s*([a-d])\b", t)
+    if m2:
+        return m2.group(1)
+
+    m3 = re.search(r"^\(?\s*([a-d])\s*\)?$", t.strip())
+    if m3:
+        return m3.group(1)
+
+    # last-resort: find first standalone A/B/C/D
+    m4 = re.search(r"\b([a-d])\b", t)
+    if m4:
+        return m4.group(1)
+
+    return ""
+
+
+def extract_correct_mcq_from_prompt(prompt: str) -> str:
+    """
+    This is IMPORTANT:
+    Your prompt must contain correct option somewhere like:
+      - Correct: B
+      - Answer: C
+      - correct_option: D
+    or JSON: {"correct_option":"B"}
+    """
+    p = (prompt or "").strip()
+    if not p:
+        return ""
+
+    # JSON prompt support
+    if p.startswith("{") and p.endswith("}"):
+        try:
+            obj = json.loads(p)
+            for k in ("correct_option", "correct", "answer", "ans"):
+                v = obj.get(k)
+                if isinstance(v, str) and v.strip():
+                    return extract_mcq_choice(v)
+        except Exception:
+            pass
+
+    # Text prompt support
+    t = _norm(p)
+    m = re.search(r"\b(correct|answer|ans)\s*[:\-]?\s*\(?\s*([a-d])\s*\)?\b", t)
+    if m:
+        return m.group(2)
+
+    return ""
 
 
 # =========================================================
@@ -229,49 +337,23 @@ def _erp_get(params: dict) -> list:
         raise HTTPException(status_code=502, detail="ERP returned invalid JSON (expected list).")
     return data
 
+
 def fetch_student_record(homework_id: int, student_id: int) -> Dict[str, Any]:
     data = _erp_get({"table": "homework", "filters[id]": homework_id, "filters[student_id]": student_id})
     if not data:
         raise HTTPException(status_code=404, detail="No ERP record found for this homework_id + student_id")
     return data[0]
 
-def fetch_teacher_image_by_homework_id(homework_id: int) -> str:
-    data = _erp_get({"table": "homework", "filters[id]": homework_id})
-    if not data:
-        raise HTTPException(status_code=404, detail="No ERP homework record found for this homework_id")
 
-    row = data[0]
-    for key in ("image", "teacher_image", "reference_image", "solution_image"):
-        v = (row.get(key) or "").strip()
-        if v:
-            return v
-
-    raise HTTPException(
-        status_code=422,
-        detail="Teacher image missing in ERP for this homework_id (image/teacher_image/reference_image/solution_image all empty).",
-    )
-
-
-# =========================================================
-# ✅ DOWNLOAD
-# =========================================================
-def _looks_like_html(b: bytes) -> bool:
-    head = (b[:300] or b"").lower()
-    return (b"<!doctype html" in head) or (b"<html" in head) or (b"<head" in head)
-
-def download_bytes(url: str) -> bytes:
-    headers = {}
-    if ERP_TOKEN:
-        headers["Authorization"] = f"Bearer {ERP_TOKEN}"
-
-    r = requests.get(url, headers=headers, timeout=30)
-    r.raise_for_status()
-    b = r.content or b""
-
-    if _looks_like_html(b):
-        raise HTTPException(status_code=502, detail="Teacher image URL returned HTML (not an image). Storage may require auth.")
-
-    return b
+def fetch_student_level_from_erp(row: Dict[str, Any]) -> str:
+    """
+    ERP field name is not guaranteed; try common ones.
+    """
+    for k in ("student_level", "level", "difficulty", "difficulty_level"):
+        v = row.get(k)
+        if isinstance(v, str) and v.strip():
+            return normalize_level(v)
+    return "Medium"
 
 
 # =========================================================
@@ -290,6 +372,7 @@ def _preprocess_for_ocr(img: Image.Image) -> Image.Image:
     img = img.point(lambda p: 255 if p > 170 else 0)
     return img
 
+
 def extract_text_from_image(image_bytes: bytes, filename: str = "unknown") -> str:
     if not image_bytes or len(image_bytes) < 50:
         raise HTTPException(status_code=400, detail=f"Invalid file: '{filename}' - empty/too small")
@@ -301,7 +384,6 @@ def extract_text_from_image(image_bytes: bytes, filename: str = "unknown") -> st
         b"GIF89a": "GIF",
         b"BM": "BMP",
     }
-
     is_valid = any(image_bytes.startswith(sig) for sig in valid_image_signatures)
     if not is_valid:
         head = image_bytes[:12]
@@ -325,11 +407,13 @@ def extract_text_from_image(image_bytes: bytes, filename: str = "unknown") -> st
     text = re.sub(r"[ \t]+", " ", text)
     return text
 
+
 def _clean_extracted_text(text: str) -> str:
     text = (text or "").strip()
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
 
 def extract_text_from_docx(docx_bytes: bytes, filename: str = "unknown.docx") -> str:
     if Document is None:
@@ -348,6 +432,7 @@ def extract_text_from_docx(docx_bytes: bytes, filename: str = "unknown.docx") ->
         return _clean_extracted_text("\n".join(parts))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Unable to read DOCX '{filename}': {e}")
+
 
 def extract_text_from_pdf(pdf_bytes: bytes, filename: str = "unknown.pdf") -> Dict[str, Any]:
     used_ocr = False
@@ -383,6 +468,7 @@ def extract_text_from_pdf(pdf_bytes: bytes, filename: str = "unknown.pdf") -> Di
 
     return {"text": extracted, "used_ocr": used_ocr, "needs_ocr": False}
 
+
 async def extract_text_from_upload(file: UploadFile) -> Dict[str, Any]:
     filename = getattr(file, "filename", "") or "upload"
     content_type = (getattr(file, "content_type", "") or "").lower()
@@ -402,44 +488,34 @@ async def extract_text_from_upload(file: UploadFile) -> Dict[str, Any]:
 
     if is_image:
         try:
-            return {"text": _clean_extracted_text(extract_text_from_image(data, filename=filename)), "kind": "image", "used_ocr": True, "needs_ocr": False}
+            return {"text": _clean_extracted_text(extract_text_from_image(data, filename=filename)),
+                    "kind": "image", "used_ocr": True, "needs_ocr": False}
         except HTTPException as e:
             return {"text": "", "kind": "image", "used_ocr": True, "needs_ocr": False, "error": e.detail}
 
     if is_docx:
         try:
-            return {"text": _clean_extracted_text(extract_text_from_docx(data, filename=filename)), "kind": "docx", "used_ocr": False, "needs_ocr": False}
+            return {"text": _clean_extracted_text(extract_text_from_docx(data, filename=filename)),
+                    "kind": "docx", "used_ocr": False, "needs_ocr": False}
         except HTTPException as e:
             return {"text": "", "kind": "docx", "used_ocr": False, "needs_ocr": False, "error": e.detail}
 
     if is_pdf:
         info = extract_text_from_pdf(data, filename=filename)
-        return {
-            "text": info.get("text", ""),
-            "kind": "pdf",
-            "used_ocr": bool(info.get("used_ocr", False)),
-            "needs_ocr": bool(info.get("needs_ocr", False)),
-            "ocr_error": info.get("ocr_error"),
-        }
+        return {"text": info.get("text", ""), "kind": "pdf",
+                "used_ocr": bool(info.get("used_ocr", False)),
+                "needs_ocr": bool(info.get("needs_ocr", False)),
+                "ocr_error": info.get("ocr_error")}
 
     # fallback: try as image
     try:
-        return {"text": _clean_extracted_text(extract_text_from_image(data, filename=filename)), "kind": "unknown_as_image", "used_ocr": True, "needs_ocr": False}
+        return {"text": _clean_extracted_text(extract_text_from_image(data, filename=filename)),
+                "kind": "unknown_as_image", "used_ocr": True, "needs_ocr": False}
     except Exception:
-        return {"text": "", "kind": "unknown", "used_ocr": False, "needs_ocr": False, "error": f"Unsupported file type: {content_type or ext or 'unknown'}"}
+        return {"text": "", "kind": "unknown", "used_ocr": False, "needs_ocr": False,
+                "error": f"Unsupported file type: {content_type or ext or 'unknown'}"}
 
 
-# =========================================================
-# ✅ SIMILARITY
-# =========================================================
-def cosine_sim(a: str, b: str) -> float:
-    a = (a or "").strip().lower()
-    b = (b or "").strip().lower()
-    if not a or not b:
-        return 0.0
-    vec = TfidfVectorizer().fit([a, b])
-    X = vec.transform([a, b])
-    return float(cosine_similarity(X[0], X[1])[0][0])
 
 
 # =========================================================
@@ -448,6 +524,7 @@ def cosine_sim(a: str, b: str) -> float:
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
 
 @app.get("/health/llm")
 def health_llm():
@@ -462,20 +539,6 @@ def health_llm():
         },
     }
 
-@app.get("/gemini/models")
-def gemini_models():
-    if gemini_client is None:
-        return {"ok": False, "error": "Gemini client not initialized", "last_error": GEMINI_LAST_ERROR}
-
-    try:
-        models = []
-        for m in gemini_client.models.list():
-            name = getattr(m, "name", "")
-            supported = getattr(m, "supported_actions", None) or getattr(m, "supported_methods", None)
-            models.append({"name": name, "supported": supported})
-        return {"ok": True, "count": len(models), "models": models}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
 
 @app.post("/homework/validate")
 async def homework_validate(
@@ -484,31 +547,36 @@ async def homework_validate(
     sub_institute_id: int = Form(...),
     syear: str = Form(...),
     prompt: str = Form(...),
-    teacher_file: UploadFile = File(...),
     student_file: UploadFile = File(...),
 ):
-    teacher_info = await extract_text_from_upload(teacher_file)
-    teacher_question_text = (teacher_info.get("text") or "").strip()
+    # 0) Fetch ERP record -> get student_level automatically
+    erp_row = fetch_student_record(homework_id, student_id)
+    student_level = fetch_student_level_from_erp(erp_row)
+    policy = level_policy(student_level)
 
+    # 1) Infer question_type from prompt automatically (NO EXTRA FIELD)
+    question_type = infer_question_type_from_prompt(prompt)
+
+    # 2) Extract student text
     student_info = await extract_text_from_upload(student_file)
     student_text = (student_info.get("text") or "").strip()
 
-    MIN_WORDS = 8
+    MIN_WORDS = 3 if question_type == "mcq" else 8
     if len(student_text.split()) < MIN_WORDS:
         return {
             "student_id": student_id,
             "homework_id": homework_id,
             "sub_institute_id": sub_institute_id,
             "syear": syear,
+            "question_type": question_type,
+            "student_level": student_level,
             "status": "Unreadable",
             "match_percentage": 0,
             "ai_generated_remark": None,
-            "rule_based_remark": "Answer text could not be read clearly. Please upload a clearer image/PDF/DOCX.",
-            "teacher_extracted_text": teacher_question_text,
+            "rule_based_remark": "Answer text could not be read clearly. Please upload a clearer file.",
             "student_extracted_text": student_text,
-            "extraction": {"teacher": {k: v for k, v in teacher_info.items() if k != "text"},
-                           "student": {k: v for k, v in student_info.items() if k != "text"}},
             "llm_used": False,
+            "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
     if student_info.get("needs_ocr") and not student_text:
@@ -517,45 +585,112 @@ async def homework_validate(
             "homework_id": homework_id,
             "sub_institute_id": sub_institute_id,
             "syear": syear,
+            "question_type": question_type,
+            "student_level": student_level,
             "status": "Unreadable",
             "match_percentage": 0,
             "ai_generated_remark": None,
             "rule_based_remark": "This PDF looks scanned. OCR is required (install pdf2image + poppler) or upload a clearer file.",
-            "teacher_extracted_text": teacher_question_text,
             "student_extracted_text": student_text,
-            "extraction": {"teacher": {k: v for k, v in teacher_info.items() if k != "text"},
-                           "student": {k: v for k, v in student_info.items() if k != "text"}},
             "llm_used": False,
+            "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
-    if not teacher_question_text and len((prompt or "").strip()) < 20:
-        raise HTTPException(status_code=422, detail="Teacher question could not be extracted and prompt is too short. Provide a readable question file or include question text in prompt.")
+    # =========================================================
+    # ✅ MCQ CHECK (deterministic, no Gemini)
+    # =========================================================
+    if question_type == "mcq":
+        correct = extract_correct_mcq_from_prompt(prompt)
+        chosen = extract_mcq_choice(student_text)
 
+        if not correct:
+            return {
+                "student_id": student_id,
+                "homework_id": homework_id,
+                "sub_institute_id": sub_institute_id,
+                "syear": syear,
+                "question_type": "mcq",
+                "student_level": student_level,
+                "status": "Needs Review",
+                "match_percentage": 0,
+                "ai_generated_remark": None,
+                "rule_based_remark": "MCQ correct option not found in prompt. Include 'Correct: B' or similar in prompt.",
+                "student_extracted_text": student_text,
+                "llm_used": False,
+                "debug": {"correct": correct, "chosen": chosen},
+                "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
+            }
+
+        if not chosen:
+            return {
+                "student_id": student_id,
+                "homework_id": homework_id,
+                "sub_institute_id": sub_institute_id,
+                "syear": syear,
+                "question_type": "mcq",
+                "student_level": student_level,
+                "status": "Needs Review",
+                "match_percentage": 0,
+                "ai_generated_remark": None,
+                "rule_based_remark": "Student option (A/B/C/D) not detected clearly.",
+                "student_extracted_text": student_text,
+                "llm_used": False,
+                "debug": {"correct": correct, "chosen": chosen},
+                "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
+            }
+
+        is_correct = (chosen == correct)
+        return {
+            "student_id": student_id,
+            "homework_id": homework_id,
+            "sub_institute_id": sub_institute_id,
+            "syear": syear,
+            "question_type": "mcq",
+            "student_level": student_level,
+            "status": "Verified" if is_correct else "Needs Review",
+            "match_percentage": 100 if is_correct else 0,
+            "ai_generated_remark": None,
+            "rule_based_remark": "Correct." if is_correct else f"Incorrect. Expected {correct.upper()}, got {chosen.upper()}.",
+            "student_extracted_text": student_text,
+            "llm_used": False,
+            "debug": {"correct": correct, "chosen": chosen},
+            "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
+        }
+
+    # =========================================================
+    # ✅ NARRATIVE CHECK (Gemini generates reference)
+    # =========================================================
     if gemini_client is None:
         return {
             "student_id": student_id,
             "homework_id": homework_id,
             "sub_institute_id": sub_institute_id,
             "syear": syear,
+            "question_type": "narrative",
+            "student_level": student_level,
             "status": "Needs Review",
             "match_percentage": 0,
             "ai_generated_remark": None,
             "rule_based_remark": "Gemini not configured. Check /health/llm.",
             "llm_used": False,
             "llm_error": parse_gemini_error(GEMINI_LAST_ERROR),
+            "student_extracted_text": student_text,
+            "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
-    q_text = teacher_question_text[:2000]
     user_prompt = (
-        f"{prompt.strip()}\n\n"
-        f"QUESTION:\n{q_text}\n\n"
+        f"STUDENT_LEVEL: {student_level}\n"
+        f"QUESTION:\n{prompt.strip()}\n\n"
         'Return ONLY valid JSON with keys: {"ai_reference_answer": string, "key_points": [string, ...]}.'
     )
 
     response_text = generate_gemini_response(
         prompt=user_prompt,
-        system_prompt="Generate a correct reference answer for homework evaluation. Output strict JSON only.",
-        max_tokens=600,
+        system_prompt=(
+            "Generate a correct reference answer for homework evaluation. "
+            "Keep it aligned with the student level. Output strict JSON only."
+        ),
+        max_tokens=650,
         temperature=0.3,
     )
 
@@ -565,12 +700,16 @@ async def homework_validate(
             "homework_id": homework_id,
             "sub_institute_id": sub_institute_id,
             "syear": syear,
+            "question_type": "narrative",
+            "student_level": student_level,
             "status": "Needs Review",
             "match_percentage": 0,
             "ai_generated_remark": None,
-            "rule_based_remark": "Gemini failed. Check llm_error and /health/llm.",
+            "rule_based_remark": "Gemini failed. Check /health/llm.",
             "llm_used": False,
             "llm_error": parse_gemini_error(GEMINI_LAST_ERROR),
+            "student_extracted_text": student_text,
+            "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
     try:
@@ -582,12 +721,16 @@ async def homework_validate(
             "homework_id": homework_id,
             "sub_institute_id": sub_institute_id,
             "syear": syear,
+            "question_type": "narrative",
+            "student_level": student_level,
             "status": "Needs Review",
             "match_percentage": 0,
             "ai_generated_remark": None,
-            "rule_based_remark": "Gemini returned non-JSON output. Fix prompt/LLM formatting.",
+            "rule_based_remark": "Gemini returned non-JSON output.",
             "llm_used": False,
             "llm_error": {"ok": False, "error_type": "GEMINI_BAD_JSON", "message": str(e), "raw": response_text[:800]},
+            "student_extracted_text": student_text,
+            "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
     ai_reference_answer = (payload.get("ai_reference_answer") or "").strip()
@@ -602,39 +745,36 @@ async def homework_validate(
             "homework_id": homework_id,
             "sub_institute_id": sub_institute_id,
             "syear": syear,
+            "question_type": "narrative",
+            "student_level": student_level,
             "status": "Needs Review",
             "match_percentage": 0,
             "ai_generated_remark": None,
             "rule_based_remark": "AI returned empty reference answer.",
             "llm_used": True,
+            "student_extracted_text": student_text,
+            "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
     sim = cosine_sim(student_text, ai_reference_answer)
+    covered, missing, coverage = keypoint_coverage(student_text, key_points, kp_threshold=policy["kp_thr"])
 
-    student_low = student_text.lower()
-    covered, missing = [], []
-    for kp in key_points:
-        if kp.lower() in student_low:
-            covered.append(kp)
-        else:
-            missing.append(kp)
-
-    coverage = (len(covered) / max(1, len(key_points))) if key_points else 0.0
-    final = 0.6 * sim + 0.4 * coverage
+    final = policy["w_sim"] * sim + policy["w_cov"] * coverage
     match_pct = int(round(final * 100))
 
-    if match_pct >= 80:
+    if match_pct >= policy["verified"]:
         status = "Verified"
-    elif match_pct >= 55:
+    elif match_pct >= policy["partial"]:
         status = "Partial"
     else:
         status = "Needs Review"
 
+    # Short remark (Gemini), fallback to rule-based
     remark_prompt = (
+        f"Student level: {student_level}\n"
         f"Match: {match_pct}%\n"
         f"Missing key points: {missing[:6]}\n\n"
-        "Write a short, factual homework remark (2-4 lines). "
-        "No marks. No overpraise. Mention 1-2 missing points if any."
+        "Write a short, factual teacher remark (2-4 lines). No marks. No overpraise."
     )
 
     resp2_prompt = (
@@ -643,22 +783,18 @@ async def homework_validate(
         f"{remark_prompt}"
     )
 
-    ai_generated_remark = None
-    rule_based_remark = None
-    remark_llm_used = False
-    remark_llm_error = None
-
     ai_generated_remark = generate_gemini_response(
         prompt=resp2_prompt,
         system_prompt="You are a strict, helpful teacher. Be concise and factual.",
-        max_tokens=120,
+        max_tokens=140,
         temperature=0.6,
     )
 
-    if ai_generated_remark:
-        remark_llm_used = True
-    else:
-        remark_llm_error = GEMINI_LAST_ERROR or "Unknown LLM error"
+    rule_based_remark = None
+    remark_llm_used = bool(ai_generated_remark)
+    remark_llm_error = None if ai_generated_remark else (GEMINI_LAST_ERROR or "Unknown LLM error")
+
+    if not ai_generated_remark:
         if status == "Verified":
             rule_based_remark = "Homework matches the expected answer well. Good coverage of the key ideas."
         elif status == "Partial":
@@ -671,105 +807,24 @@ async def homework_validate(
         "homework_id": homework_id,
         "sub_institute_id": sub_institute_id,
         "syear": syear,
+        "question_type": "narrative",
+        "student_level": student_level,
         "status": status,
         "match_percentage": match_pct,
-        "ai_generated_remark": ai_generated_remark,
+        "ai_generated_remark": ai_generated_remark if ai_generated_remark else None,
         "rule_based_remark": rule_based_remark,
         "llm_used": True,
         "remark_llm_used": remark_llm_used,
         "remark_llm_error": remark_llm_error,
-        "teacher_extracted_text": teacher_question_text,
         "student_extracted_text": student_text,
         "ai_reference_answer": ai_reference_answer,
         "key_points": key_points,
         "key_points_covered": covered,
         "key_points_missing": missing,
-        "debug": {"similarity": sim, "coverage": coverage},
-        "extraction": {"teacher": {k: v for k, v in teacher_info.items() if k != "text"},
-                       "student": {k: v for k, v in student_info.items() if k != "text"}},
-    }
-
-
-@app.post("/submit")
-async def submit(
-    student_id: int = Form(...),
-    homework_id: int = Form(...),
-    images: List[UploadFile] = File(...),
-    threshold: float = Form(0.75),
-):
-    if not images:
-        raise HTTPException(status_code=400, detail="At least one student image is required")
-
-    try:
-        threshold_f = float(threshold)
-    except Exception:
-        raise HTTPException(status_code=400, detail="threshold must be a number")
-
-    student_rec = fetch_student_record(homework_id, student_id)
-
-    teacher_filename = fetch_teacher_image_by_homework_id(homework_id)
-    teacher_url = STORAGE_BASE.rstrip("/") + "/" + teacher_filename.lstrip("/")
-    teacher_bytes = download_bytes(teacher_url)
-    teacher_text = extract_text_from_image(teacher_bytes, filename=teacher_filename)
-
-    if not teacher_text.strip():
-        raise HTTPException(status_code=422, detail="Teacher OCR extracted empty text. Teacher reference is not OCR-friendly.")
-
-    extracted_data = []
-    remarks = []
-    scores = []
-    student_texts = []
-    gradings = []
-
-    # First pass: extract text and calculate scores
-    for i, img in enumerate(images, 1):
-        student_bytes = await img.read()
-        fname = (img.filename or f"image_{i}.jpg")
-        student_text = extract_text_from_image(student_bytes, filename=fname)
-        student_texts.append(student_text)
-
-        grading = {
-            "status": "EVALUATED" if teacher_text.strip() and student_text.strip() else "NO_TEXT",
-            "overall_score": cosine_sim(student_text, teacher_text) if teacher_text.strip() and student_text.strip() else None,
-            "threshold": threshold_f
-        }
-        score = grading.get("overall_score")
-        gradings.append(grading)
-        if score is not None:
-            scores.append(float(score))
-
-    calculated_completion_status = "Y" if scores and all(s >= threshold_f for s in scores) else "N"
-
-    # Second pass: deterministic remarks
-    for i, img in enumerate(images, 1):
-        grading = gradings[i - 1]
-        student_text = student_texts[i - 1]
-        score = grading.get("overall_score")
-
-        if score is None:
-            remark = "Unable to evaluate: reference or answer text is not readable."
-        else:
-            pct = int(float(score) * 100)
-            remark = f"Match {pct}%. " + ("Good work." if pct >= int(threshold_f * 100) else "Needs improvement. Review missing points and rewrite clearly.")
-
-        remarks.append(remark)
-        extracted_data.append({
-            "original_filename": img.filename or f"image_{i}.jpg",
-            "student_text": student_text,
-            "grading": grading,
-            "ai_generated_remark": remark,
-        })
-
-    return {
-        "student_id": student_id,
-        "homework_id": homework_id,
-        "title": student_rec.get("title"),
-        "date": student_rec.get("date"),
-        "completion_status": student_rec.get("completion_status"),
-        "calculated_completion_status": calculated_completion_status,
-        "teacher_image": teacher_filename,
-        "teacher_url": teacher_url,
-        "files_processed": len(images),
-        "extracted_data": extracted_data,
-        "message": "Processed successfully",
+        "debug": {
+            "similarity": sim,
+            "coverage": coverage,
+            "policy": policy,
+        },
+        "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
     }
