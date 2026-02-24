@@ -7,3 +7,7 @@ scikit-learn
 sqlalchemy
 requests
 openai
+python-docx
+google-genai
+python-dotenv
+pypdf
