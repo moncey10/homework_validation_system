@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 # app.py
 import os
 import io
@@ -3852,4 +3852,4 @@ async def homework_validate(
         },
         "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
     }
->>>>>>> 62488ea57bd9d96e9237e25b1b41b81a5eccc0e9
+
