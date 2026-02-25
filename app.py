@@ -951,14 +951,17 @@ def health_llm():
 async def homework_validate(
     student_id: int = Form(...),
     homework_id: int = Form(...),
-    sub_institute_id: int = Form(...),
-    syear: str = Form(...),
-    prompt: str = Form(...),
-    question_type: str = Form(None),
     student_file: UploadFile = File(...),
 ):
-    # 0) Fetch ERP record -> get student_level automatically
+    # 0) Fetch ERP record -> get all fields automatically
     erp_row = fetch_student_record(homework_id, student_id)
+    
+    # Extract fields from ERP record
+    sub_institute_id = erp_row.get("sub_institute_id")
+    syear = erp_row.get("syear")
+    prompt = erp_row.get("prompt") or erp_row.get("question_prompt") or ""
+    question_type = erp_row.get("question_type") or erp_row.get("type")
+    
     student_level = fetch_student_level_from_erp(erp_row)
     policy = level_policy(student_level)
     # Decide final question type: respect request value if valid, else infer
