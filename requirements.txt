@@ -1,4 +1,4 @@
-fastapi
+ffastapi
 uvicorn
 pytesseract
 pillow
@@ -19,5 +19,6 @@ easyocr
 python-docx
 pypdf
 pdf2image
+reportlab
 python-dotenv
 google-genai

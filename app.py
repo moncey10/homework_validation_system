@@ -27,6 +27,16 @@ except Exception:
     PdfReader = None
 
 try:
+    from reportlab.pdfgen import canvas
+    from reportlab.lib.pagesizes import letter
+    from reportlab.lib import colors
+    from reportlab.lib.utils import ImageReader
+    import reportlab
+except Exception as e:
+    reportlab = None
+    print(f"[WARN] reportlab import failed: {e}")
+
+try:
     from pdf2image import convert_from_bytes  # requires poppler
 except Exception:
     convert_from_bytes = None
@@ -56,6 +66,22 @@ except Exception as e:
 app = FastAPI()
 
 import os
+
+# Serve static files from outputs directory
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+
+# Create outputs directory if it doesn't exist
+outputs_dir = os.path.join(os.path.dirname(__file__), "outputs")
+os.makedirs(outputs_dir, exist_ok=True)
+
+@app.get("/outputs/{filename}")
+async def get_output_file(filename: str):
+    """Serve files from the outputs directory."""
+    filepath = os.path.join(outputs_dir, filename)
+    if os.path.exists(filepath):
+        return FileResponse(filepath)
+    raise HTTPException(status_code=404, detail="File not found")
 
 @app.get("/debug/env")
 def debug_env():
@@ -875,6 +901,142 @@ def extract_text_from_pdf(pdf_bytes: bytes, filename: str = "unknown.pdf") -> Di
     return {"text": extracted, "used_ocr": used_ocr, "needs_ocr": False}
 
 
+def create_annotated_pdf(
+    original_pdf_bytes: bytes,
+    mcq_results: List[Dict[str, Any]] = None,
+    match_percentage: int = 0,
+    status: str = "Needs Review",
+    student_level: str = "Medium"
+) -> bytes:
+    """
+    Create an annotated PDF with tickmarks showing correct/incorrect answers.
+    
+    Args:
+        original_pdf_bytes: The original PDF file content
+        mcq_results: List of MCQ results with 'correct' and 'qid' fields
+        match_percentage: Overall match percentage
+        status: Validation status
+        student_level: Student level (Easy/Medium/Hard)
+    
+    Returns:
+        Annotated PDF as bytes
+    """
+    if not reportlab:
+        print("[WARN] reportlab not available, returning original PDF")
+        return original_pdf_bytes
+    
+    try:
+        from pypdf import PdfWriter, PdfReader
+        from io import BytesIO
+        
+        # Read original PDF
+        original_reader = PdfReader(BytesIO(original_pdf_bytes))
+        writer = PdfWriter()
+        
+        # Process each page
+        for page_num, page in enumerate(original_reader.pages):
+            # Get page dimensions
+            page_width = float(page.mediabox.width)
+            page_height = float(page.mediabox.height)
+            
+            # Create overlay canvas for annotations
+            packet = BytesIO()
+            c = canvas.Canvas(packet, pagesize=(page_width, page_height))
+            
+            # Draw tickmarks for MCQ questions
+            # Position marks along the right margin
+            if mcq_results:
+                y_start = page_height - 50
+                y_spacing = 30
+                
+                # Calculate which questions to show on this page
+                # (show first few on first page, rest on subsequent pages)
+                marks_per_page = int((page_height - 100) / y_spacing)
+                
+                start_idx = page_num * marks_per_page
+                end_idx = min(start_idx + marks_per_page, len(mcq_results))
+                
+                for i in range(start_idx, end_idx):
+                    result = mcq_results[i]
+                    qid = result.get('qid', f'Q{i+1}')
+                    is_correct = result.get('correct', False)
+                    
+                    y_pos = y_start - ((i - start_idx) * y_spacing)
+                    x_pos = page_width - 60
+                    
+                    # Draw tick or cross
+                    if is_correct:
+                        # Green checkmark
+                        c.setStrokeColor(colors.green)
+                        c.setFillColor(colors.green)
+                        c.setLineWidth(2)
+                        c.circle(x_pos, y_pos, 12, fill=0)
+                        c.setFont("Helvetica-Bold", 14)
+                        c.drawString(x_pos - 5, y_pos - 5, "✓")
+                    else:
+                        # Red X mark
+                        c.setStrokeColor(colors.red)
+                        c.setFillColor(colors.red)
+                        c.setLineWidth(2)
+                        c.circle(x_pos, y_pos, 12, fill=0)
+                        c.setFont("Helvetica-Bold", 14)
+                        c.drawString(x_pos - 5, y_pos - 5, "✗")
+                    
+                    # Draw question label
+                    c.setStrokeColor(colors.black)
+                    c.setFillColor(colors.black)
+                    c.setFont("Helvetica", 8)
+                    c.drawString(x_pos - 35, y_pos - 3, str(qid))
+            
+            # Add header with summary on first page
+            if page_num == 0:
+                # Draw header background
+                c.setFillColor(colors.lightgrey)
+                c.rect(0, page_height - 60, page_width, 60, fill=1, stroke=0)
+                
+                # Draw status text - LARGER FONT
+                c.setFillColor(colors.black)
+                c.setFont("Helvetica-Bold", 20)
+                
+                status_color = colors.green if status == "Verified" else (
+                    colors.orange if status == "Partial" else colors.red
+                )
+                c.setFillColor(status_color)
+                c.drawString(30, page_height - 30, f"Status: {status}")
+                
+                c.setFillColor(colors.black)
+                c.setFont("Helvetica-Bold", 18)
+                c.drawString(250, page_height - 30, f"Score: {match_percentage}%")
+                c.drawString(450, page_height - 30, f"Level: {student_level}")
+                
+                # Draw MCQ summary
+                if mcq_results:
+                    correct_count = sum(1 for r in mcq_results if r.get('correct'))
+                    total_count = len(mcq_results)
+                    c.setFont("Helvetica-Bold", 14)
+                    c.drawString(30, page_height - 50, f"MCQ: {correct_count}/{total_count} correct")
+            
+            c.save()
+            packet.seek(0)
+            
+            # Merge overlay with original page
+            overlay_reader = PdfReader(packet)
+            if overlay_reader.pages:
+                page.merge_page(overlay_reader.pages[0])
+            
+            writer.add_page(page)
+        
+        # Write the final PDF
+        output = BytesIO()
+        writer.write(output)
+        output.seek(0)
+        return output.read()
+        
+    except Exception as e:
+        print(f"[ERROR] Failed to create annotated PDF: {e}")
+        return original_pdf_bytes
+
+
 async def extract_text_from_upload(file: UploadFile) -> Dict[str, Any]:
     filename = getattr(file, "filename", "") or "upload"
     content_type = (getattr(file, "content_type", "") or "").lower()
@@ -947,6 +1109,180 @@ def health_llm():
     }
 
 
+@app.get("/homework/annotated-url/{homework_id}/{student_id}")
+async def get_annotated_pdf_url(
+    homework_id: int,
+    student_id: int,
+):
+    """
+    Get the URL for the annotated PDF.
+    Returns JSON with the URL that can be used in your frontend.
+    """
+    base_url = os.getenv("APP_BASE_URL", "http://127.0.0.1:8000")
+    return {
+        "homework_id": homework_id,
+        "student_id": student_id,
+        "annotated_pdf_url": f"{base_url}/homework/annotated/{homework_id}/{student_id}"
+    }
+@app.get("/homework/annotated/{homework_id}/{student_id}")
+async def get_annotated_pdf(
+    homework_id: int,
+    student_id: int,
+):
+    """
+    Download the annotated PDF with tickmarks for a validated homework.
+    This endpoint returns the PDF directly as a file download.
+    """
+    from fastapi.responses import Response
+    
+    try:
+        # Fetch ERP record
+        erp_row = fetch_student_record(homework_id, student_id)
+        
+        # Get submission image from ERP
+        submission_image = erp_row.get("submission_image")
+        if not submission_image:
+            raise HTTPException(status_code=404, detail="No submission found")
+        
+        # Download the original file
+        submission_url = STORAGE_BASE + submission_image
+        resp = requests.get(submission_url, timeout=30)
+        resp.raise_for_status()
+        original_content = resp.content
+        
+        # Determine file type
+        filename = submission_image.lower()
+        is_pdf = filename.endswith('.pdf')
+        
+        if not is_pdf:
+            raise HTTPException(status_code=400, detail="Annotated PDF only available for PDF submissions")
+        
+        # Get prompt and question type
+        prompt = erp_row.get("prompt") or erp_row.get("question_prompt") or ""
+        question_type = erp_row.get("question_type") or erp_row.get("type")
+        student_level = fetch_student_level_from_erp(erp_row)
+        
+        final_question_type = (question_type or "").strip().lower()
+        if final_question_type not in ("mcq", "narrative", "mixed"):
+            final_question_type = infer_question_type_from_prompt(prompt)
+        
+        # Extract text from PDF
+        pdf_info = extract_text_from_pdf(original_content, filename=submission_image)
+        student_text = (pdf_info.get("text") or "").strip()
+        
+        if not student_text or len(student_text) < 10:
+            raise HTTPException(status_code=400, detail="Could not extract text from PDF")
+        
+        mcq_results = []
+        status = "Needs Review"
+        match_percentage = 0
+        
+        # Process based on question type
+        if final_question_type == "mcq":
+            correct = extract_correct_mcq_from_prompt(prompt)
+            chosen = extract_mcq_choice(student_text)
+            
+            student_answers_by_qid = extract_mcq_answers_with_qid(student_text)
+            
+            if student_answers_by_qid:
+                # Multiple MCQ
+                parsed_questions = parse_questions_from_prompt(prompt)
+                mcq_questions_with_answers = [q for q in parsed_questions if q.get('type') == 'mcq' and q.get('correct_answer')]
+                
+                for qid, student_ans in student_answers_by_qid.items():
+                    matched = False
+                    for pq in mcq_questions_with_answers:
+                        pq_num = pq.get('qid', '').replace('Q', '').strip()
+                        qid_num = qid.replace('Q', '').strip()
+                        if pq_num == qid_num:
+                            is_correct = student_ans.lower() == pq.get('correct_answer', '').lower()
+                            mcq_results.append({
+                                'qid': qid,
+                                'chosen': student_ans,
+                                'correct_answer': pq.get('correct_answer'),
+                                'correct': is_correct
+                            })
+                            matched = True
+                            break
+                    if not matched:
+                        mcq_results.append({'qid': qid, 'chosen': student_ans, 'correct_answer': None, 'correct': False})
+                
+                if mcq_results:
+                    correct_count = sum(1 for r in mcq_results if r.get('correct'))
+                    mcq_credit = mcq_partial_credit(student_level)
+                    match_percentage = int((correct_count * mcq_credit["credit_per_question"]) / max(1, len(mcq_results)))
+                    status = "Verified" if match_percentage >= mcq_credit["passing_threshold"] else "Needs Review"
+            elif correct and chosen:
+                is_correct = (chosen == correct)
+                mcq_credit = mcq_partial_credit(student_level)
+                match_percentage = mcq_credit["credit_per_question"] if is_correct else 0
+                status = "Verified" if match_percentage >= mcq_credit["passing_threshold"] else "Needs Review"
+                mcq_results = [{'qid': 'Q1', 'correct': is_correct, 'chosen': chosen, 'correct_answer': correct}]
+        
+        # For narrative, calculate score using AI
+        if final_question_type == "narrative" and gemini_client:
+            # Generate AI reference answer
+            ai_prompt = (
+                f"STUDENT_LEVEL: {student_level}\n"
+                f"QUESTION:\n{prompt.strip()}\n\n"
+                'Return ONLY valid JSON with keys: {"ai_reference_answer": string, "key_points": [string, ...]}.'
+            )
+            
+            response_text = generate_gemini_response(
+                prompt=ai_prompt,
+                system_prompt="Generate a correct reference answer for homework evaluation. Keep it aligned with the student level. Output strict JSON only.",
+                max_tokens=650,
+                temperature=0.3,
+            )
+            
+            if response_text:
+                try:
+                    import re
+                    m = re.search(r'\{.*\}', response_text, flags=re.S)
+                    payload = json.loads(m.group(0) if m else response_text)
+                    
+                    ai_reference_answer = (payload.get("ai_reference_answer") or "").strip()
+                    key_points = payload.get("key_points") or []
+                    
+                    policy = level_policy(student_level)
+                    sim = cosine_sim(student_text, ai_reference_answer)
+                    covered, missing, coverage = keypoint_coverage(student_text, key_points, kp_threshold=policy["kp_thr"])
+                    
+                    final = policy["w_sim"] * sim + policy["w_cov"] * coverage
+                    match_percentage = int(round(final * 100))
+                    
+                    if match_percentage >= policy["verified"]:
+                        status = "Verified"
+                    elif match_percentage >= policy["partial"]:
+                        status = "Partial"
+                    else:
+                        status = "Needs Review"
+                except Exception as e:
+                    print(f"[WARN] Failed to calculate narrative score: {e}")
+        
+        # Create annotated PDF
+        annotated_pdf = create_annotated_pdf(
+            original_pdf_bytes=original_content,
+            mcq_results=mcq_results,
+            match_percentage=match_percentage,
+            status=status,
+            student_level=student_level
+        )
+        
+        # Return as file download
+        return Response(
+            content=annotated_pdf,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"inline; filename=annotated_homework_{homework_id}_{student_id}.pdf"}
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"[ERROR] Failed to generate annotated PDF: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {str(e)}")
+
+
 @app.post("/homework/validate")
 async def homework_validate(
     student_id: int = Form(...),
@@ -981,9 +1317,51 @@ async def homework_validate(
     # 2) Extract student text
     student_info = await extract_text_from_upload(student_file)
     student_text = (student_info.get("text") or "").strip()
+    
+    # Keep a copy of the original file bytes for PDF annotation
+    # Reset file cursor and read again
+    await student_file.seek(0)
+    original_file_bytes = await student_file.read()
+    await student_file.seek(0)  # Reset for any further processing
+    
+    # Check if it's a PDF
+    is_pdf_submission = student_info.get("kind") == "pdf"
+    
+    # Initialize annotated PDF filename
+    annotated_pdf_filename = None
+    
+    # Function to save annotated PDF
+    def save_annotated_pdf(pdf_bytes, hw_id, stud_id, results, score, stat, lvl):
+        if not pdf_bytes or len(pdf_bytes) < 100:
+            return None
+        try:
+            outputs_dir = os.path.join(os.path.dirname(__file__), "outputs")
+            os.makedirs(outputs_dir, exist_ok=True)
+            filename = f"marked_{hw_id}_{stud_id}.pdf"
+            filepath = os.path.join(outputs_dir, filename)
+            
+            annotated = create_annotated_pdf(
+                original_pdf_bytes=pdf_bytes,
+                mcq_results=results,
+                match_percentage=score,
+                status=stat,
+                student_level=lvl
+            )
+            
+            with open(filepath, "wb") as f:
+                f.write(annotated)
+            return filename
+        except Exception as e:
+            print(f"[WARN] Failed to save annotated PDF: {e}")
+            return None
 
     MIN_WORDS = 3 if final_question_type == "mcq" else 8
     if len(student_text.split()) < MIN_WORDS:
+        # Save annotated PDF even for unreadable (with status shown)
+        if is_pdf_submission and original_file_bytes:
+            annotated_pdf_filename = save_annotated_pdf(
+                original_file_bytes, homework_id, student_id, [], 0, "Unreadable", student_level
+            )
         return {
             "student_id": student_id,
             "homework_id": homework_id,
@@ -997,10 +1375,16 @@ async def homework_validate(
             "rule_based_remark": "Answer text could not be read clearly. Please upload a clearer file.",
             "student_extracted_text": student_text,
             "llm_used": False,
+            "annotated_pdf": annotated_pdf_filename,
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
     if student_info.get("needs_ocr") and not student_text:
+        # Save annotated PDF even for unreadable (with status shown)
+        if is_pdf_submission and original_file_bytes:
+            annotated_pdf_filename = save_annotated_pdf(
+                original_file_bytes, homework_id, student_id, [], 0, "Unreadable", student_level
+            )
         return {
             "student_id": student_id,
             "homework_id": homework_id,
@@ -1014,6 +1398,7 @@ async def homework_validate(
             "rule_based_remark": "This PDF looks scanned. OCR is required (install pdf2image + poppler) or upload a clearer file.",
             "student_extracted_text": student_text,
             "llm_used": False,
+            "annotated_pdf": annotated_pdf_filename,
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
@@ -1136,6 +1521,12 @@ async def homework_validate(
         else:
             status = "Needs Review"
         
+        # Save annotated PDF
+        if is_pdf_submission and original_file_bytes and mcq_results:
+            annotated_pdf_filename = save_annotated_pdf(
+                original_file_bytes, homework_id, student_id, mcq_results, final_score, status, student_level
+            )
+        
         return {
             "student_id": student_id,
             "homework_id": homework_id,
@@ -1151,6 +1542,7 @@ async def homework_validate(
             "student_extracted_text": student_text,
             "mcq_results": mcq_results,
             "narrative_results": narrative_results,
+            "annotated_pdf": annotated_pdf_filename,
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
             "debug": {
                 "erp_row_fields": list(erp_row.keys()) if erp_row else [],
@@ -1169,10 +1561,13 @@ async def homework_validate(
 
         # Smart fallback: if answer looks like narrative (not MCQ), treat as narrative instead
         # This handles cases where question type is MCQ but student answered in narrative format
+        # BUT if the answer contains Option A/B/C/D, treat as MCQ
+        answer_has_mcq_option = bool(re.search(r"\b(option|answer|ans)\s*[:\-]?\s*[a-d]\b", _norm(student_text)))
+        
         answer_looks_like_narrative = (
             len(student_text.split()) > 15 and  # More than 15 words
             not has_multiple_mcq and  # Not multiple numbered MCQ answers
-            not re.search(r"\b(option|answer|ans)\s*[:\-]?\s*[a-d]\b", _norm(student_text))  # No explicit option markers
+            not answer_has_mcq_option  # No explicit option markers
         )
 
         # If answer looks like narrative, redirect to narrative processing
@@ -1227,6 +1622,12 @@ async def homework_validate(
                 passing_threshold = mcq_credit["passing_threshold"]
                 status = "Verified" if match_percentage >= passing_threshold else "Needs Review"
                 
+                # Save annotated PDF
+                if is_pdf_submission and original_file_bytes:
+                    annotated_pdf_filename = save_annotated_pdf(
+                        original_file_bytes, homework_id, student_id, mcq_results, match_percentage, status, student_level
+                    )
+                
                 return {
                     "student_id": student_id,
                     "homework_id": homework_id,
@@ -1240,11 +1641,17 @@ async def homework_validate(
                     "rule_based_remark": f"Multiple MCQ: {correct_count}/{total_count} correct. Score: {match_percentage}% (Level: {student_level})",
                     "student_extracted_text": student_text,
                     "llm_used": False,
+                    "annotated_pdf": annotated_pdf_filename,
                     "debug": {"student_answers": student_answers_by_qid, "mcq_results": mcq_results},
                     "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
                 }
             else:
                 # No correct answers in prompt - return needs review with extracted answers
+                # Save annotated PDF
+                if is_pdf_submission and original_file_bytes:
+                    annotated_pdf_filename = save_annotated_pdf(
+                        original_file_bytes, homework_id, student_id, [], 0, "Needs Review", student_level
+                    )
                 return {
                     "student_id": student_id,
                     "homework_id": homework_id,
@@ -1258,6 +1665,7 @@ async def homework_validate(
                     "rule_based_remark": f"Found {len(student_answers_by_qid)} MCQ answers but no correct answers in prompt. Include 'Correct: B' for each question.",
                     "student_extracted_text": student_text,
                     "llm_used": False,
+                    "annotated_pdf": annotated_pdf_filename,
                     "debug": {"student_answers": student_answers_by_qid, "correct_answers_in_prompt": False},
                     "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
                 }
@@ -1265,6 +1673,11 @@ async def homework_validate(
         if redirect_to_narrative:
             pass  # Will continue to narrative handling
         elif not correct:
+            # Save annotated PDF
+            if is_pdf_submission and original_file_bytes:
+                annotated_pdf_filename = save_annotated_pdf(
+                    original_file_bytes, homework_id, student_id, [], 0, "Needs Review", student_level
+                )
             return {
                 "student_id": student_id,
                 "homework_id": homework_id,
@@ -1278,10 +1691,16 @@ async def homework_validate(
                 "rule_based_remark": "MCQ correct option not found in prompt. Include 'Correct: B' or similar in prompt.",
                 "student_extracted_text": student_text,
                 "llm_used": False,
+                "annotated_pdf": annotated_pdf_filename,
                 "debug": {"correct": correct, "chosen": chosen},
                 "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
             }
         elif not chosen:
+            # Save annotated PDF
+            if is_pdf_submission and original_file_bytes:
+                annotated_pdf_filename = save_annotated_pdf(
+                    original_file_bytes, homework_id, student_id, [], 0, "Needs Review", student_level
+                )
             return {
                 "student_id": student_id,
                 "homework_id": homework_id,
@@ -1295,6 +1714,7 @@ async def homework_validate(
                 "rule_based_remark": "Student option (A/B/C/D) not detected clearly.",
                 "student_extracted_text": student_text,
                 "llm_used": False,
+                "annotated_pdf": annotated_pdf_filename,
                 "debug": {"correct": correct, "chosen": chosen},
                 "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
             }
@@ -1314,6 +1734,13 @@ async def homework_validate(
             passing_threshold = mcq_credit["passing_threshold"]
             status = "Verified" if match_percentage >= passing_threshold else "Needs Review"
             
+            # Save annotated PDF
+            mcq_results_single = [{'qid': 'Q1', 'correct': is_correct, 'chosen': chosen, 'correct_answer': correct}]
+            if is_pdf_submission and original_file_bytes:
+                annotated_pdf_filename = save_annotated_pdf(
+                    original_file_bytes, homework_id, student_id, mcq_results_single, match_percentage, status, student_level
+                )
+            
             return {
                 "student_id": student_id,
                 "homework_id": homework_id,
@@ -1327,12 +1754,18 @@ async def homework_validate(
                 "rule_based_remark": f"{'Correct' if is_correct else 'Incorrect'}. Score: {match_percentage}% (Level: {student_level}, Credit per Q: {credit_per_q}%)",
                 "student_extracted_text": student_text,
                 "llm_used": False,
+                "annotated_pdf": annotated_pdf_filename,
                 "debug": {"correct": correct, "chosen": chosen, "level": student_level, "credit_per_q": credit_per_q},
                 "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
             }
 
  
     if gemini_client is None:
+        # Save annotated PDF
+        if is_pdf_submission and original_file_bytes:
+            annotated_pdf_filename = save_annotated_pdf(
+                original_file_bytes, homework_id, student_id, [], 0, "Needs Review", student_level
+            )
         return {
             "student_id": student_id,
             "homework_id": homework_id,
@@ -1347,6 +1780,7 @@ async def homework_validate(
             "llm_used": False,
             "llm_error": parse_gemini_error(GEMINI_LAST_ERROR),
             "student_extracted_text": student_text,
+            "annotated_pdf": annotated_pdf_filename,
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
@@ -1367,6 +1801,11 @@ async def homework_validate(
     )
 
     if not response_text:
+        # Save annotated PDF
+        if is_pdf_submission and original_file_bytes:
+            annotated_pdf_filename = save_annotated_pdf(
+                original_file_bytes, homework_id, student_id, [], 0, "Needs Review", student_level
+            )
         return {
             "student_id": student_id,
             "homework_id": homework_id,
@@ -1381,6 +1820,7 @@ async def homework_validate(
             "llm_used": False,
             "llm_error": parse_gemini_error(GEMINI_LAST_ERROR),
             "student_extracted_text": student_text,
+            "annotated_pdf": annotated_pdf_filename,
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
@@ -1388,6 +1828,11 @@ async def homework_validate(
         m = re.search(r"\{.*\}", response_text, flags=re.S)
         payload = json.loads(m.group(0) if m else response_text)
     except Exception as e:
+        # Save annotated PDF
+        if is_pdf_submission and original_file_bytes:
+            annotated_pdf_filename = save_annotated_pdf(
+                original_file_bytes, homework_id, student_id, [], 0, "Needs Review", student_level
+            )
         return {
             "student_id": student_id,
             "homework_id": homework_id,
@@ -1402,6 +1847,7 @@ async def homework_validate(
             "llm_used": False,
             "llm_error": {"ok": False, "error_type": "GEMINI_BAD_JSON", "message": str(e), "raw": response_text[:800]},
             "student_extracted_text": student_text,
+            "annotated_pdf": annotated_pdf_filename,
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
@@ -1412,6 +1858,11 @@ async def homework_validate(
     key_points = [str(x).strip() for x in key_points if str(x).strip()]
 
     if not ai_reference_answer:
+        # Save annotated PDF
+        if is_pdf_submission and original_file_bytes:
+            annotated_pdf_filename = save_annotated_pdf(
+                original_file_bytes, homework_id, student_id, [], 0, "Needs Review", student_level
+            )
         return {
             "student_id": student_id,
             "homework_id": homework_id,
@@ -1425,6 +1876,7 @@ async def homework_validate(
             "rule_based_remark": "AI returned empty reference answer.",
             "llm_used": True,
             "student_extracted_text": student_text,
+            "annotated_pdf": annotated_pdf_filename,
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
@@ -1474,6 +1926,12 @@ async def homework_validate(
         else:
             rule_based_remark = "Homework does not match the expected answer enough. Please review the topic and resubmit with clearer, complete points."
 
+    # Save annotated PDF for narrative (with status but no MCQ marks)
+    if is_pdf_submission and original_file_bytes:
+        annotated_pdf_filename = save_annotated_pdf(
+            original_file_bytes, homework_id, student_id, [], match_pct, status, student_level
+        )
+
     return {
         "student_id": student_id,
         "homework_id": homework_id,
@@ -1493,6 +1951,7 @@ async def homework_validate(
         "key_points": key_points,
         "key_points_covered": covered,
         "key_points_missing": missing,
+        "annotated_pdf": annotated_pdf_filename,
         "debug": {
             "similarity": sim,
             "coverage": coverage,
