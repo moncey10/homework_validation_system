@@ -1,4 +1,4 @@
-ffastapi
+fastapi
 uvicorn
 pytesseract
 pillow
