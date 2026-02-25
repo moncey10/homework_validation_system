@@ -393,7 +393,7 @@ def keypoint_coverage(student_text: str, key_points: List[str], kp_threshold: fl
 
 
 
-def infer_question_type_from_prompt(prompt: str) -> str:
+def infer_question_type_from_prompt(prompt: str, student_text: str = "") -> str:
     p = _norm(prompt)
 
     # Explicit markers - check for (mcq) first since it's common in parentheses
@@ -402,9 +402,23 @@ def infer_question_type_from_prompt(prompt: str) -> str:
     if re.search(r"\btype\s*:\s*narrative\b", p) or re.search(r"\bquestion_type\s*:\s*narrative\b", p):
         return "narrative"
 
-    # Heuristic: options A/B/C/D exist -> likely MCQ
+    # Heuristic: options A/B/C/D exist in prompt -> likely MCQ
     if re.search(r"\b(a|b|c|d)\s*[\)\.]\s+", p) or "option a" in p or "option b" in p:
         return "mcq"
+    
+    # Check if prompt contains common MCQ keywords
+    if re.search(r"\bchoose the correct|which is correct|select the right|multiple choice|single answer\b", p):
+        return "mcq"
+
+    # Check student answer for MCQ indicators if provided
+    if student_text:
+        s = _norm(student_text)
+        # If student answer contains Option A/B/C/D, treat as MCQ
+        if re.search(r"\boption\s*[a-d]\b", s) or re.search(r"^\(?\s*[a-d]\s*\)?$", s.strip()):
+            return "mcq"
+        # If answer starts with A. or B. etc.
+        if re.search(r"^[a-d]\.\s+", s.strip()):
+            return "mcq"
 
     return "narrative"
 
@@ -1162,16 +1176,16 @@ async def get_annotated_pdf(
         question_type = erp_row.get("question_type") or erp_row.get("type")
         student_level = fetch_student_level_from_erp(erp_row)
         
-        final_question_type = (question_type or "").strip().lower()
-        if final_question_type not in ("mcq", "narrative", "mixed"):
-            final_question_type = infer_question_type_from_prompt(prompt)
-        
-        # Extract text from PDF
+        # Extract text from PDF FIRST (needed for question type inference)
         pdf_info = extract_text_from_pdf(original_content, filename=submission_image)
         student_text = (pdf_info.get("text") or "").strip()
         
         if not student_text or len(student_text) < 10:
             raise HTTPException(status_code=400, detail="Could not extract text from PDF")
+        
+        final_question_type = (question_type or "").strip().lower()
+        if final_question_type not in ("mcq", "narrative", "mixed"):
+            final_question_type = infer_question_type_from_prompt(prompt, student_text)
         
         mcq_results = []
         status = "Needs Review"
@@ -1300,21 +1314,8 @@ async def homework_validate(
     
     student_level = fetch_student_level_from_erp(erp_row)
     policy = level_policy(student_level)
-    # Decide final question type: respect request value if valid, else infer
-    final_question_type = (question_type or "").strip().lower()
-    if final_question_type not in ("mcq", "narrative", "mixed"):
-      final_question_type = infer_question_type_from_prompt(prompt)
 
-
-    # 1) Infer question_type from prompt automatically (NO EXTRA FIELD)
-    # Try to parse mixed questions first
-    parsed_questions = parse_questions_from_prompt(prompt)
-    has_mcq = any(q.get('type') == 'mcq' for q in parsed_questions)
-    has_narrative = any(q.get('type') == 'narrative' for q in parsed_questions)
-    
-    # Infer question type from prompt
-
-    # 2) Extract student text
+    # 2) Extract student text FIRST (needed for question type inference)
     student_info = await extract_text_from_upload(student_file)
     student_text = (student_info.get("text") or "").strip()
     
@@ -1323,6 +1324,17 @@ async def homework_validate(
     await student_file.seek(0)
     original_file_bytes = await student_file.read()
     await student_file.seek(0)  # Reset for any further processing
+    
+    # Decide final question type: respect request value if valid, else infer using student text
+    final_question_type = (question_type or "").strip().lower()
+    if final_question_type not in ("mcq", "narrative", "mixed"):
+        final_question_type = infer_question_type_from_prompt(prompt, student_text)
+
+    # 1) Infer question_type from prompt automatically (NO EXTRA FIELD)
+    # Try to parse mixed questions first
+    parsed_questions = parse_questions_from_prompt(prompt)
+    has_mcq = any(q.get('type') == 'mcq' for q in parsed_questions)
+    has_narrative = any(q.get('type') == 'narrative' for q in parsed_questions)
     
     # Check if it's a PDF
     is_pdf_submission = student_info.get("kind") == "pdf"
