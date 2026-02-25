@@ -60,7 +60,8 @@ import os
 @app.get("/debug/env")
 def debug_env():
     return {
-        "has_gemini_key": bool(os.getenv("GEMINI_API_KEY")),
+        "has_gemini_keys": bool(GOOGLE_API_KEYS),
+        "num_keys": len(GOOGLE_API_KEYS),
         "has_openai_key": bool(os.getenv("OPENAI_API_KEY")),
     }
 app.add_middleware(
@@ -86,7 +87,22 @@ ERP_TOKEN = os.getenv("ERP_TOKEN", "")
 
 
 
+# API Key Rotation - Support multiple API keys for higher limits
+GOOGLE_API_KEYS = []
+for i in range(1, 10):  # Support up to 10 API keys
+    key = os.getenv(f"GOOGLE_API_KEY_{i}", "").strip()
+    if key:
+        GOOGLE_API_KEYS.append(key)
+
+# Fallback to single key if no multi-key config
 GOOGLE_API_KEY = (os.getenv("GOOGLE_API_KEY") or "").strip()
+if not GOOGLE_API_KEYS and GOOGLE_API_KEY:
+    GOOGLE_API_KEYS = [GOOGLE_API_KEY]
+
+# Track current key index and rate-limited keys
+current_key_index = 0
+rate_limited_keys = set()  # Track keys that are rate limited
+
 GEMINI_MODEL = (os.getenv("GEMINI_MODEL", "models/gemini-flash-lite-latest") or "").strip()
 if GEMINI_MODEL and not GEMINI_MODEL.startswith("models/"):
     GEMINI_MODEL = "models/" + GEMINI_MODEL
@@ -111,34 +127,81 @@ if google_vision_available and GOOGLE_CLOUD_VISION_API_KEY:
 gemini_client = None
 GEMINI_LAST_ERROR = ""
 
-
-def _init_gemini_client() -> None:
-    global gemini_client, GEMINI_LAST_ERROR
-
-    if gemini_client is not None:
+def _init_gemini_client(key_index: int = 0) -> None:
+    """Initialize Gemini client with the API key at the given index."""
+    global gemini_client, GEMINI_LAST_ERROR, current_key_index
+    
+    current_key_index = key_index
+    
+    if not GOOGLE_API_KEYS:
+        GEMINI_LAST_ERROR = "No GOOGLE_API_KEY configured"
+        gemini_client = None
         return
+    
+    if key_index >= len(GOOGLE_API_KEYS):
+        GEMINI_LAST_ERROR = "All API keys rate limited or exhausted"
+        gemini_client = None
+        return
+    
+    api_key = GOOGLE_API_KEYS[key_index]
 
     if not genai:
         GEMINI_LAST_ERROR = "google-genai not installed / import failed"
         gemini_client = None
         return
 
-    if not GOOGLE_API_KEY:
-        GEMINI_LAST_ERROR = "GOOGLE_API_KEY not set"
+    if not api_key:
+        GEMINI_LAST_ERROR = f"GOOGLE_API_KEY_{key_index + 1} not set"
         gemini_client = None
         return
 
     try:
-        gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
+        gemini_client = genai.Client(api_key=api_key)
         GEMINI_LAST_ERROR = ""
-        print("[INFO] Gemini client initialized")
+        print(f"[INFO] Gemini client initialized with key #{key_index + 1}")
     except Exception as e:
         gemini_client = None
         GEMINI_LAST_ERROR = str(e)
         print(f"[WARN] Gemini init failed: {GEMINI_LAST_ERROR}")
 
 
-_init_gemini_client()
+def _is_rate_limit_error(error_msg: str) -> bool:
+    """Check if the error is a rate limit error (429)."""
+    if not error_msg:
+        return False
+    lower = error_msg.lower()
+    return "429" in lower or "rate_limit" in lower or "resource_exhausted" in lower or "rate limit" in lower
+
+
+def _rotate_to_next_key() -> bool:
+    """Rotate to the next available API key. Returns True if successful, False if all keys exhausted."""
+    global current_key_index, rate_limited_keys
+    
+    if len(GOOGLE_API_KEYS) <= 1:
+        return False
+    
+    # Mark current key as rate limited
+    rate_limited_keys.add(current_key_index)
+    print(f"[WARN] Key #{current_key_index + 1} rate limited, rotating to next key...")
+    
+    # Find next available key
+    attempts = 0
+    while attempts < len(GOOGLE_API_KEYS):
+        current_key_index = (current_key_index + 1) % len(GOOGLE_API_KEYS)
+        if current_key_index not in rate_limited_keys:
+            _init_gemini_client(current_key_index)
+            if gemini_client:
+                print(f"[INFO] Rotated to API key #{current_key_index + 1}")
+                return True
+        attempts += 1
+    
+    # All keys exhausted
+    GEMINI_LAST_ERROR = "All API keys are rate limited"
+    print("[ERROR] All API keys are rate limited")
+    return False
+
+
+_init_gemini_client(0)
 
 
 def parse_gemini_error(error_msg: str) -> dict:
@@ -160,12 +223,16 @@ def generate_gemini_response(
     max_tokens: int = 650,
     temperature: float = 0.3,
 ) -> str:
-    global GEMINI_LAST_ERROR
+    global GEMINI_LAST_ERROR, gemini_client, rate_limited_keys
 
     if gemini_client is None:
         if not GEMINI_LAST_ERROR:
             GEMINI_LAST_ERROR = "Gemini client not initialized"
-        return ""
+        # Try to reinitialize if we have keys available
+        if GOOGLE_API_KEYS and current_key_index not in rate_limited_keys:
+            _init_gemini_client(current_key_index)
+        if gemini_client is None:
+            return ""
 
     try:
         contents = []
@@ -183,8 +250,17 @@ def generate_gemini_response(
             GEMINI_LAST_ERROR = ""
         return text
     except Exception as e:
-        GEMINI_LAST_ERROR = str(e)
-        print(f"[ERROR] Gemini call failed: {GEMINI_LAST_ERROR}")
+        error_msg = str(e)
+        print(f"[ERROR] Gemini call failed: {error_msg}")
+        
+        # Check if it's a rate limit error and try to rotate
+        if _is_rate_limit_error(error_msg):
+            GEMINI_LAST_ERROR = error_msg
+            if _rotate_to_next_key():
+                # Retry with new key
+                return generate_gemini_response(prompt, system_prompt, max_tokens, temperature)
+        
+        GEMINI_LAST_ERROR = error_msg
         return ""
 
 import time
@@ -857,10 +933,13 @@ def health():
 @app.get("/health/llm")
 def health_llm():
     return {
-        "ok": bool(gemini_client) and bool(GOOGLE_API_KEY),
+        "ok": bool(gemini_client) and bool(GOOGLE_API_KEYS),
         "gemini": {
             "sdk_import_ok": genai is not None,
-            "configured": bool(GOOGLE_API_KEY),
+            "configured": bool(GOOGLE_API_KEYS),
+            "num_keys_configured": len(GOOGLE_API_KEYS),
+            "current_key_index": current_key_index + 1 if GOOGLE_API_KEYS else 0,
+            "rate_limited_keys": list(rate_limited_keys),
             "client_ready": gemini_client is not None,
             "model": GEMINI_MODEL,
             "last_error": GEMINI_LAST_ERROR if GEMINI_LAST_ERROR else None,
