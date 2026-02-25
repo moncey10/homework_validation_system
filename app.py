@@ -911,7 +911,7 @@ async def homework_validate(
             "student_level": student_level,
             "status": "Unreadable",
             "match_percentage": 0,
-            "ai_generated_remark": None,
+            "submission_remark": None,
             "rule_based_remark": "Answer text could not be read clearly. Please upload a clearer file.",
             "student_extracted_text": student_text,
             "llm_used": False,
@@ -928,7 +928,7 @@ async def homework_validate(
             "student_level": student_level,
             "status": "Unreadable",
             "match_percentage": 0,
-            "ai_generated_remark": None,
+            "submission_remark": None,
             "rule_based_remark": "This PDF looks scanned. OCR is required (install pdf2image + poppler) or upload a clearer file.",
             "student_extracted_text": student_text,
             "llm_used": False,
@@ -1063,7 +1063,7 @@ async def homework_validate(
             "student_level": student_level,
             "status": status,
             "match_percentage": final_score,
-            "ai_generated_remark": None,
+            "submission_remark": None,
             "rule_based_remark": f"MCQ: {correct_mcq}/{total_mcq} correct. Narrative score: {narrative_score}%. (Level: {student_level}, Credit per Q: {credit_per_q}%)",
             "llm_used": bool(narrative_results and 'error' not in narrative_results),
             "student_extracted_text": student_text,
@@ -1154,7 +1154,7 @@ async def homework_validate(
                     "student_level": student_level,
                     "status": status,
                     "match_percentage": match_percentage,
-                    "ai_generated_remark": None,
+                    "submission_remark": None,
                     "rule_based_remark": f"Multiple MCQ: {correct_count}/{total_count} correct. Score: {match_percentage}% (Level: {student_level})",
                     "student_extracted_text": student_text,
                     "llm_used": False,
@@ -1172,7 +1172,7 @@ async def homework_validate(
                     "student_level": student_level,
                     "status": "Needs Review",
                     "match_percentage": 0,
-                    "ai_generated_remark": None,
+                    "submission_remark": None,
                     "rule_based_remark": f"Found {len(student_answers_by_qid)} MCQ answers but no correct answers in prompt. Include 'Correct: B' for each question.",
                     "student_extracted_text": student_text,
                     "llm_used": False,
@@ -1192,7 +1192,7 @@ async def homework_validate(
                 "student_level": student_level,
                 "status": "Needs Review",
                 "match_percentage": 0,
-                "ai_generated_remark": None,
+                "submission_remark": None,
                 "rule_based_remark": "MCQ correct option not found in prompt. Include 'Correct: B' or similar in prompt.",
                 "student_extracted_text": student_text,
                 "llm_used": False,
@@ -1209,7 +1209,7 @@ async def homework_validate(
                 "student_level": student_level,
                 "status": "Needs Review",
                 "match_percentage": 0,
-                "ai_generated_remark": None,
+                "submission_remark": None,
                 "rule_based_remark": "Student option (A/B/C/D) not detected clearly.",
                 "student_extracted_text": student_text,
                 "llm_used": False,
@@ -1241,7 +1241,7 @@ async def homework_validate(
                 "student_level": student_level,
                 "status": status,
                 "match_percentage": match_percentage,
-                "ai_generated_remark": None,
+                "submission_remark": None,
                 "rule_based_remark": f"{'Correct' if is_correct else 'Incorrect'}. Score: {match_percentage}% (Level: {student_level}, Credit per Q: {credit_per_q}%)",
                 "student_extracted_text": student_text,
                 "llm_used": False,
@@ -1260,7 +1260,7 @@ async def homework_validate(
             "student_level": student_level,
             "status": "Needs Review",
             "match_percentage": 0,
-            "ai_generated_remark": None,
+            "submission_remark": None,
             "rule_based_remark": "Gemini not configured. Check /health/llm.",
             "llm_used": False,
             "llm_error": parse_gemini_error(GEMINI_LAST_ERROR),
@@ -1294,7 +1294,7 @@ async def homework_validate(
             "student_level": student_level,
             "status": "Needs Review",
             "match_percentage": 0,
-            "ai_generated_remark": None,
+            "submission_remark": None,
             "rule_based_remark": "Gemini failed. Check /health/llm.",
             "llm_used": False,
             "llm_error": parse_gemini_error(GEMINI_LAST_ERROR),
@@ -1315,7 +1315,7 @@ async def homework_validate(
             "student_level": student_level,
             "status": "Needs Review",
             "match_percentage": 0,
-            "ai_generated_remark": None,
+            "submission_remark": None,
             "rule_based_remark": "Gemini returned non-JSON output.",
             "llm_used": False,
             "llm_error": {"ok": False, "error_type": "GEMINI_BAD_JSON", "message": str(e), "raw": response_text[:800]},
@@ -1339,7 +1339,7 @@ async def homework_validate(
             "student_level": student_level,
             "status": "Needs Review",
             "match_percentage": 0,
-            "ai_generated_remark": None,
+            "submission_remark": None,
             "rule_based_remark": "AI returned empty reference answer.",
             "llm_used": True,
             "student_extracted_text": student_text,
@@ -1373,7 +1373,7 @@ async def homework_validate(
         f"{remark_prompt}"
     )
 
-    ai_generated_remark = generate_gemini_response(
+    submission_remark = generate_gemini_response(
         prompt=resp2_prompt,
         system_prompt="You are a strict, helpful teacher. Be concise and factual.",
         max_tokens=140,
@@ -1381,10 +1381,10 @@ async def homework_validate(
     )
 
     rule_based_remark = None
-    remark_llm_used = bool(ai_generated_remark)
-    remark_llm_error = None if ai_generated_remark else (GEMINI_LAST_ERROR or "Unknown LLM error")
+    remark_llm_used = bool(submission_remark)
+    remark_llm_error = None if submission_remark else (GEMINI_LAST_ERROR or "Unknown LLM error")
 
-    if not ai_generated_remark:
+    if not submission_remark:
         if status == "Verified":
             rule_based_remark = "Homework matches the expected answer well. Good coverage of the key ideas."
         elif status == "Partial":
@@ -1401,7 +1401,7 @@ async def homework_validate(
         "student_level": student_level,
         "status": status,
         "match_percentage": match_pct,
-        "ai_generated_remark": ai_generated_remark if ai_generated_remark else None,
+        "submission_remark": submission_remark if submission_remark else None,
         "rule_based_remark": rule_based_remark,
         "llm_used": True,
         "remark_llm_used": remark_llm_used,
