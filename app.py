@@ -875,6 +875,7 @@ async def homework_validate(
     sub_institute_id: int = Form(...),
     syear: str = Form(...),
     prompt: str = Form(...),
+    question_type: str = Form(None),
     student_file: UploadFile = File(...),
 ):
     # 0) Fetch ERP record -> get student_level automatically
