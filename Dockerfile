@@ -1,9 +1,10 @@
 FROM python:3.10-slim
 
-# Install Tesseract OCR + dependencies
+# Install Tesseract OCR + Poppler + dependencies
 RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     libtesseract-dev \
+    poppler-utils \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
