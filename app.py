@@ -94,6 +94,16 @@ async def get_storsge_file(filename:str):
     if os.path.exists(filepath):
         return FileResponse(filepath)
     raise HTTPException(status_code=404, detail="File not found")
+
+@app.get("/debug/erp-row")
+async def debug_erp_row(homework_id: int, student_id: int):
+    """Debug endpoint: shows the raw ERP row so you can see all field names."""
+    try:
+        row = fetch_student_record(homework_id, student_id)
+        return {"erp_row": row, "keys": list(row.keys())}
+    except Exception as e:
+        return {"error": str(e)}
+
 @app.get("/debug/env")
 def debug_env():
     return {
@@ -317,6 +327,52 @@ def parse_gemini_error(error_msg: str) -> dict:
         return {"ok": False, "error_type": "GEMINI_KEY_OR_PERMISSION_ERROR", "message": msg}
 
     return {"ok": False, "error_type": "GEMINI_ERROR", "message": msg}
+
+
+
+def extract_qid_from_prompt(prompt: str, erp_row: dict = None) -> str:
+    """
+    Extract the question number (e.g. 'Q5') from the ERP row or prompt string.
+    Priority:
+      1. Direct field in erp_row: question_no, q_no, sr_no, serial_no, qno, question_number, q_number, order, position
+      2. Pattern match in prompt text: 'Q5:', 'Question 5:', '5.', '5)'
+      3. Falls back to 'Q1' if nothing found.
+    """
+    import re as _re
+
+    # Priority 1: check ERP row fields directly
+    if erp_row and isinstance(erp_row, dict):
+        for field in ("question_no", "q_no", "qno", "sr_no", "serial_no",
+                      "question_number", "q_number", "order", "position",
+                      "question_order", "q_order", "seq", "sequence", "index"):
+            val = erp_row.get(field)
+            if val is not None:
+                try:
+                    num = int(str(val).strip())
+                    if 1 <= num <= 200:
+                        print(f"[INFO] extract_qid: found Q{num} from erp_row['{field}']={val}")
+                        return f"Q{num}"
+                except (ValueError, TypeError):
+                    pass
+
+    # Priority 2: parse from prompt text
+    p = (prompt or "").strip()
+    m = _re.match(r'^[Qq]\s*(\d+)', p)
+    if m:
+        return f"Q{m.group(1)}"
+    m2 = _re.match(r'^Question\s*(\d+)', p, _re.IGNORECASE)
+    if m2:
+        return f"Q{m2.group(1)}"
+    m3 = _re.match(r'^(\d+)[.)\s]', p)
+    if m3:
+        return f"Q{m3.group(1)}"
+    first_line = p.split('\n')[0]
+    m4 = _re.search(r'[Qq]\s*(\d+)', first_line)
+    if m4:
+        return f"Q{m4.group(1)}"
+
+    print(f"[WARN] extract_qid: could not determine question number from prompt={repr(p[:80])} erp_row_keys={list((erp_row or {}).keys())}")
+    return "Q1"
 
 
 def generate_gemini_response(
@@ -604,7 +660,7 @@ def parse_questions_from_prompt(prompt: str) -> List[Dict[str, Any]]:
     # If no questions parsed, fall back to old behavior
     if not questions:
         qtype = infer_question_type_from_prompt(prompt)
-        return [{'qid': 'Q1', 'type': qtype, 'question': prompt, 'correct_answer': None}]
+        return [{'qid': extract_qid_from_prompt(prompt), 'type': qtype, 'question': prompt, 'correct_answer': None}]
     
     return questions
 
@@ -996,13 +1052,11 @@ def get_question_positions_from_pdf(pdf_bytes: bytes) -> Dict[int, List[Dict]]:
     Detect question number positions in a PDF.
     Strategy 1: pypdf text-layer visitor (fast, for PDFs with text layer).
     Strategy 2: pdf2image + pytesseract OCR (for image-based PDFs).
-    Returns dict mapping page_num -> list of {qid, y_pos, x_pos}
-    where y_pos/x_pos are in PDF coordinate units (origin at bottom-left).
+    Returns dict: page_num -> [{qid, y_pos, x_pos}] in PDF coords (origin bottom-left).
     """
     try:
         from pypdf import PdfReader
         from io import BytesIO
-
         reader = PdfReader(BytesIO(pdf_bytes))
         question_positions: Dict[int, List[Dict]] = {}
 
@@ -1031,9 +1085,7 @@ def get_question_positions_from_pdf(pdf_bytes: bytes) -> Dict[int, List[Dict]]:
                 parts = []
                 def _visitor(text, cm, tm, font_dict, font_size):
                     if text and text.strip():
-                        x = float(tm[4]) if tm else 0
-                        y = float(tm[5]) if tm else 0
-                        parts.append((text.strip(), x, y))
+                        parts.append((text.strip(), float(tm[4]) if tm else 0, float(tm[5]) if tm else 0))
                 page.extract_text(visitor_text=_visitor)
                 tl_patterns = [
                     re.compile(r'\bQ\s*(\d+)\b', re.IGNORECASE),
@@ -1052,7 +1104,7 @@ def get_question_positions_from_pdf(pdf_bytes: bytes) -> Dict[int, List[Dict]]:
             except Exception as tl_err:
                 print(f"[WARN] text-layer page {page_num}: {tl_err}")
 
-            # Strategy 2: OCR fallback
+            # Strategy 2: OCR fallback (image-based PDFs)
             if not found:
                 try:
                     from pdf2image import convert_from_bytes as _c2b
@@ -1065,21 +1117,13 @@ def get_question_positions_from_pdf(pdf_bytes: bytes) -> Dict[int, List[Dict]]:
                         scale_y = page_height / img_h
                         ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
                         for i, token in enumerate(ocr_data['text']):
-                            if not token or not token.strip():
-                                continue
-                            if int(ocr_data['conf'][i]) < 20:
+                            if not token or not token.strip() or int(ocr_data['conf'][i]) < 20:
                                 continue
                             dm = re.match(r'^[Qq]\s*(\d+)[.:]?$', token.strip())
-                            if dm:
-                                qid = f"Q{dm.group(1)}"
-                            else:
-                                qid = _normalise_ocr_qid(token)
+                            qid = f"Q{dm.group(1)}" if dm else _normalise_ocr_qid(token)
                             if qid and qid not in existing_qids:
-                                img_x = ocr_data['left'][i]
-                                img_y = ocr_data['top'][i]
-                                img_h_tok = ocr_data['height'][i]
-                                pdf_x = img_x * scale_x
-                                pdf_y = page_height - (img_y + img_h_tok * 0.5) * scale_y
+                                pdf_x = ocr_data['left'][i] * scale_x
+                                pdf_y = page_height - (ocr_data['top'][i] + ocr_data['height'][i] * 0.5) * scale_y
                                 existing_qids.add(qid)
                                 found.append({'qid': qid, 'y_pos': pdf_y, 'x_pos': pdf_x})
                 except Exception as ocr_err:
@@ -1088,12 +1132,11 @@ def get_question_positions_from_pdf(pdf_bytes: bytes) -> Dict[int, List[Dict]]:
             if found:
                 found.sort(key=lambda d: -d['y_pos'])
                 question_positions[page_num] = found
-
         return question_positions
-
     except Exception as e:
         print(f"[WARN] Failed to get question positions: {e}")
         return {}
+
 
 def create_annotated_pdf(
     original_pdf_bytes: bytes,
@@ -1120,26 +1163,21 @@ def create_annotated_pdf(
         from pypdf import PdfWriter, PdfReader
         from io import BytesIO
 
-        # ── Detect question positions ──────────────────────────────────────
         question_positions = get_question_positions_from_pdf(original_pdf_bytes)
         print(f"[INFO] Detected question positions: {question_positions}")
 
-        # Build lookup: qid -> (page_num, pdf_y, pdf_x)
         qid_location: Dict[str, tuple] = {}
         for pg, items in question_positions.items():
             for item in items:
                 qid_location[item["qid"]] = (pg, item["y_pos"], item["x_pos"])
 
-        # Build a quick lookup from mcq_results: qid -> result dict
         results_by_qid: Dict[str, Dict] = {}
         for r in (mcq_results or []):
             qid = r.get("qid", "")
             if qid:
                 results_by_qid[qid] = r
 
-        # ── Helpers ────────────────────────────────────────────────────────
         def _draw_mark(c, x, y, is_correct, is_unattempted, radius=14):
-            """Draw a mark symbol centred at PDF coordinates (x, y)."""
             if is_unattempted:
                 c.setStrokeColor(colors.Color(1.0, 0.55, 0.0))
                 c.setFillColor(colors.Color(1.0, 0.55, 0.0))
@@ -1150,8 +1188,6 @@ def create_annotated_pdf(
                 c.setFillColor(colors.grey)
                 c.setLineWidth(2)
                 c.circle(x, y, radius, fill=0)
-                c.setFont("Helvetica-Bold", int(radius * 0.9))
-                c.drawString(x - radius * 0.3, y - radius * 0.4, "?")
             elif is_correct:
                 c.setStrokeColor(colors.Color(0.0, 0.65, 0.0))
                 c.setFillColor(colors.Color(0.0, 0.65, 0.0))
@@ -1169,9 +1205,7 @@ def create_annotated_pdf(
                 c.setFont("Helvetica-Bold", int(radius * 1.5))
                 c.drawString(x - radius * 0.5, y - radius * 0.45, "\u2717")
 
-        MARK_RADIUS = 14
-        # Mark is drawn just to the LEFT of the detected Q-number text
-        # x_pos from detection = left edge of "Q1." text; offset left by radius+4
+        MARK_RADIUS   = 14
         MARK_X_OFFSET = -(MARK_RADIUS + 4)
 
         original_reader = PdfReader(BytesIO(original_pdf_bytes))
@@ -1181,66 +1215,74 @@ def create_annotated_pdf(
         for page_num, page in enumerate(original_reader.pages):
             page_width  = float(page.mediabox.width)
             page_height = float(page.mediabox.height)
-
             packet = BytesIO()
             c = canvas.Canvas(packet, pagesize=(page_width, page_height))
 
-            # ── Draw a mark for every detected question on this page ────────
-            page_detected = question_positions.get(page_num, [])
-
-            for item in page_detected:
+            # Draw a mark for every detected question on this page
+            for item in question_positions.get(page_num, []):
                 qid   = item["qid"]
                 y_pos = item["y_pos"]
                 x_pos = item["x_pos"]
 
-                # Get result for this qid (default = unattempted if not in results)
                 result         = results_by_qid.get(qid)
-                is_unattempted = True   # default: no result entry = unattempted
+                is_unattempted = True   # default: no data → unattempted
                 is_correct     = False
 
                 if result is not None:
-                    is_unattempted = bool(result.get("unattempted", False))
-                    is_correct     = result.get("correct", False)
-                    # If no explicit unattempted flag but chosen is empty -> unattempted
-                    if not is_unattempted and not result.get("chosen", ""):
+                    explicit_unattempted = result.get("unattempted")
+                    chosen = result.get("chosen", "")
+                    correct_val = result.get("correct")
+
+                    if explicit_unattempted is True:
+                        # Explicitly flagged as unattempted
                         is_unattempted = True
+                        is_correct = False
+                    elif not chosen or str(chosen).strip() == "":
+                        # No answer recorded → treat as unattempted
+                        is_unattempted = True
+                        is_correct = False
+                    else:
+                        # Answer was given — mark correct or wrong
+                        is_unattempted = False
+                        is_correct = bool(correct_val)
 
                 mark_x = max(MARK_RADIUS + 2, x_pos + MARK_X_OFFSET)
                 mark_y = y_pos + MARK_RADIUS * 0.3
                 _draw_mark(c, mark_x, mark_y, is_correct, is_unattempted, MARK_RADIUS)
 
-            # ── Fallback marks for results whose qid was NOT detected ───────
-            # (edge case: question number in results but OCR/text-layer missed it)
-            undetected_results = [r for r in (mcq_results or [])
-                                  if r.get("qid") not in qid_location]
-            if undetected_results:
-                per_page  = max(1, (len(undetected_results) + total_pages - 1) // total_pages)
+            # Fallback: results whose qid was not detected in the PDF
+            undetected = [r for r in (mcq_results or []) if r.get("qid") not in qid_location]
+            if undetected:
+                per_page  = max(1, (len(undetected) + total_pages - 1) // total_pages)
                 start_idx = page_num * per_page
-                page_slice = undetected_results[start_idx: start_idx + per_page]
+                page_slice = undetected[start_idx: start_idx + per_page]
                 y_start   = page_height - 100
                 y_spacing = max(20, (page_height - 130) / max(1, per_page))
                 for i, result in enumerate(page_slice):
-                    is_unattempted = bool(result.get("unattempted", False))
-                    if not is_unattempted and not result.get("chosen", ""):
+                    explicit_unattempted = result.get("unattempted")
+                    chosen = result.get("chosen", "")
+                    correct_val = result.get("correct")
+
+                    if explicit_unattempted is True or not chosen or str(chosen).strip() == "":
                         is_unattempted = True
-                    is_correct = result.get("correct", False)
+                        is_correct = False
+                    else:
+                        is_unattempted = False
+                        is_correct = bool(correct_val)
                     y_pos = y_start - i * y_spacing
                     if y_pos < 30:
                         break
                     _draw_mark(c, 18, y_pos, is_correct, is_unattempted, 9)
 
-            # ── Header bar (first page) ─────────────────────────────────────
+            # Header bar on first page
             if page_num == 0:
                 header_h = 58
                 c.setFillColor(colors.Color(0.93, 0.93, 0.93))
                 c.rect(0, page_height - header_h, page_width, header_h, fill=1, stroke=0)
 
-                if status == "Verified":
-                    sc = colors.Color(0.0, 0.65, 0.0)
-                elif status == "Partial":
-                    sc = colors.Color(1.0, 0.55, 0.0)
-                else:
-                    sc = colors.Color(0.85, 0.1, 0.1)
+                sc = (colors.Color(0.0, 0.65, 0.0) if status == "Verified"
+                      else colors.Color(1.0, 0.55, 0.0) if status == "Partial"
+                      else colors.Color(0.85, 0.1, 0.1))
 
                 c.setFillColor(sc); c.setStrokeColor(sc)
                 c.circle(18, page_height - 22, 8, fill=1)
@@ -1252,16 +1294,15 @@ def create_annotated_pdf(
                 c.drawString(page_width * 0.42, page_height - 27, f"Score: {match_percentage}%")
                 c.drawString(page_width * 0.72, page_height - 27, f"Level: {student_level}")
 
-                if mcq_results or page_detected:
-                    # Count across ALL detected questions (not just those in results)
-                    all_qids_detected = [item["qid"] for pg_items in question_positions.values()
-                                         for item in pg_items]
+                all_detected = [item["qid"] for pg_items in question_positions.values()
+                                for item in pg_items]
+                if all_detected or mcq_results:
                     correct_count     = sum(1 for r in (mcq_results or []) if r.get("correct"))
                     wrong_count       = sum(1 for r in (mcq_results or [])
                                            if not r.get("correct") and not r.get("unattempted")
                                            and r.get("chosen", ""))
-                    unattempted_count = len(all_qids_detected) - correct_count - wrong_count
-                    total_count       = len(all_qids_detected) or len(mcq_results or [])
+                    unattempted_count = len(all_detected) - correct_count - wrong_count
+                    total_count       = len(all_detected) or len(mcq_results or [])
 
                     c.setFont("Helvetica-Bold", 11)
                     if question_type == "narrative":
@@ -1492,7 +1533,8 @@ async def get_annotated_pdf(
                 mcq_credit = mcq_partial_credit(student_level)
                 match_percentage = mcq_credit["credit_per_question"] if is_correct else 0
                 status = "Verified" if match_percentage >= mcq_credit["passing_threshold"] else "Needs Review"
-                mcq_results = [{'qid': 'Q1', 'correct': is_correct, 'chosen': chosen, 'correct_answer': correct}]
+                _qid = extract_qid_from_prompt(prompt, erp_row)
+                mcq_results = [{'qid': _qid, 'correct': is_correct, 'chosen': chosen, 'correct_answer': correct}]
         
         # For narrative, calculate score using AI
         if final_question_type == "narrative" and gemini_client:
@@ -1541,8 +1583,9 @@ async def get_annotated_pdf(
                     else:
                         narrative_correct = False
                     
+                    _qid = extract_qid_from_prompt(prompt, erp_row)
                     mcq_results = [
-                        {'qid': 'Q1', 'correct': narrative_correct, 'chosen': f'Score: {match_percentage}%', 'correct_answer': status}
+                        {'qid': _qid, 'correct': narrative_correct, 'chosen': f'Score: {match_percentage}%', 'correct_answer': status}
                     ]
                 except Exception as e:
                     print(f"[WARN] Failed to calculate narrative score: {e}")
@@ -1569,6 +1612,215 @@ async def get_annotated_pdf(
     except Exception as e:
         print(f"[ERROR] Failed to generate annotated PDF: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {str(e)}")
+
+
+def ai_evaluate_per_question(
+    prompt: str,
+    student_text: str,
+    student_level: str = "Medium",
+) -> list:
+    """
+    Uses Gemini AI to evaluate each question individually from the student's answer sheet.
+
+    Logic:
+      1. Send ALL questions from the prompt + the full student answer text to Gemini.
+      2. Gemini identifies:
+         - Which questions the student attempted (wrote any answer for)
+         - For each attempted question: is the answer correct or wrong?
+         - For unattempted questions: marks as unattempted
+      3. Returns list of {qid, correct, unattempted, chosen, correct_answer}
+
+    Marking rules (as per requirement):
+      - No answer written            → unattempted  (orange ○)
+      - Answer written, score < 35%  → wrong         (red ✗)
+      - Answer written, score >= 35% → correct       (green ✓)
+    """
+    import re as _re
+
+    # Parse question numbers from the homework prompt
+    q_numbers = []
+    for m in _re.finditer(r'\bQ(\d+)\s*[:\.]?', prompt, _re.IGNORECASE):
+        n = int(m.group(1))
+        if n not in q_numbers:
+            q_numbers.append(n)
+    q_numbers.sort()
+
+    if not q_numbers:
+        # Single question fallback — ask Gemini to evaluate it
+        q_numbers = [1]
+
+    total_q = len(q_numbers)
+    qid_list = [f"Q{n}" for n in q_numbers]
+
+    ai_prompt = f"""You are a strict homework evaluator. Your job is to evaluate each question individually.
+
+STUDENT LEVEL: {student_level}
+TOTAL QUESTIONS: {total_q}
+QUESTION IDs: {', '.join(qid_list)}
+
+HOMEWORK QUESTIONS (from teacher):
+{prompt.strip()}
+
+STUDENT'S ANSWER SHEET (OCR extracted):
+{student_text.strip()}
+
+INSTRUCTIONS:
+For EACH question ({', '.join(qid_list)}), you must determine:
+1. Did the student write ANY answer for this question? (check the student's answer sheet carefully)
+2. If NO answer was written → mark as "unattempted"
+3. If answer was written → evaluate if it is correct based on the homework question
+   - score >= 35% similarity to correct answer → "correct"
+   - score < 35% similarity → "wrong"
+
+IMPORTANT RULES:
+- Look carefully at student's answer text. The student may have written answers with question numbers like "1.", "Q1:", "1)", or just paragraph answers.
+- If student's answer sheet is blank or has no relevant text for a specific question → unattempted
+- Be strict: a vague or incomplete answer with < 35% match to expected answer = wrong
+- A reasonably correct answer with >= 35% match = correct
+
+Return ONLY valid JSON array, no extra text:
+[
+  {{"qid": "Q1", "status": "correct" | "wrong" | "unattempted", "student_answer_snippet": "brief snippet of what student wrote or empty string", "reason": "one line reason"}},
+  ...one entry per question...
+]"""
+
+    response = generate_gemini_response(
+        prompt=ai_prompt,
+        system_prompt="You are a strict homework evaluator. Output only valid JSON array.",
+        max_tokens=800,
+        temperature=0.1,
+    )
+
+    results = []
+
+    if response:
+        try:
+            # Extract JSON array from response
+            m = re.search(r'\[.*\]', response, flags=re.S)
+            if m:
+                ai_data = json.loads(m.group(0))
+                seen_qids = set()
+                for item in ai_data:
+                    qid = (item.get("qid") or "").strip()
+                    status = (item.get("status") or "unattempted").strip().lower()
+                    snippet = (item.get("student_answer_snippet") or "").strip()
+
+                    if not qid:
+                        continue
+                    seen_qids.add(qid)
+
+                    is_unattempted = status == "unattempted"
+                    is_correct = status == "correct"
+
+                    results.append({
+                        "qid": qid,
+                        "correct": is_correct,
+                        "unattempted": is_unattempted,
+                        "chosen": snippet[:80] if snippet else ("" if is_unattempted else "Answered"),
+                        "correct_answer": "" if is_unattempted else ("Correct" if is_correct else "Wrong"),
+                    })
+
+                # Add any missing questions as unattempted
+                for n in q_numbers:
+                    qid = f"Q{n}"
+                    if qid not in seen_qids:
+                        results.append({
+                            "qid": qid,
+                            "correct": False,
+                            "unattempted": True,
+                            "chosen": "",
+                            "correct_answer": "",
+                        })
+
+                # Sort by question number
+                results.sort(key=lambda r: int(re.search(r'\d+', r.get("qid", "Q0")).group() or 0))
+                return results
+
+        except Exception as e:
+            print(f"[WARN] ai_evaluate_per_question JSON parse failed: {e}, raw={response[:300]}")
+
+    # ── Fallback: Gemini failed → use cosine similarity per question ──────────
+    print("[WARN] ai_evaluate_per_question: Gemini failed, using cosine similarity fallback")
+    return _cosine_fallback_per_question(prompt, student_text, q_numbers)
+
+
+def _cosine_fallback_per_question(prompt: str, student_text: str, q_numbers: list) -> list:
+    """
+    Fallback when Gemini is unavailable.
+    Extracts each question's answer from student text using regex segmentation,
+    then scores with cosine similarity. < 35% = wrong, >= 35% = correct, no text = unattempted.
+    """
+    import re as _re
+
+    WRONG_THRESHOLD = 0.35
+
+    def q_start_regex(n):
+        return _re.compile(
+            rf'(?:q\s*{n}\s*[:.)\-]|(?<!\d){n}\s*[.):\-]\s|question\s*{n}\s*[:.)\-]?|ans(?:wer)?\s*{n}\s*[:.)\-]?)',
+            _re.IGNORECASE
+        )
+
+    results = []
+    text = student_text or ""
+
+    for n in q_numbers:
+        qid = f"Q{n}"
+        pat = q_start_regex(n)
+        m = pat.search(text)
+
+        if not m:
+            results.append({"qid": qid, "correct": False, "unattempted": True, "chosen": "", "correct_answer": ""})
+            continue
+
+        answer_start = m.end()
+        answer_end = len(text)
+
+        # Find where next question starts
+        for other_n in q_numbers:
+            if other_n == n:
+                continue
+            om = q_start_regex(other_n).search(text, answer_start)
+            if om and om.start() < answer_end:
+                answer_end = om.start()
+
+        answer_text = text[answer_start:answer_end].strip()
+
+        if not answer_text or len(answer_text.split()) < 2:
+            results.append({"qid": qid, "correct": False, "unattempted": True, "chosen": "", "correct_answer": ""})
+            continue
+
+        # Score against full student text (rough proxy — no per-Q reference available here)
+        sim = cosine_sim(answer_text, text)
+        is_correct = sim >= WRONG_THRESHOLD
+
+        results.append({
+            "qid": qid,
+            "correct": is_correct,
+            "unattempted": False,
+            "chosen": answer_text[:80],
+            "correct_answer": "Correct" if is_correct else "Wrong",
+        })
+
+    return results
+
+
+def build_per_question_results(
+    prompt: str,
+    student_text: str,
+    overall_status: str,
+    overall_score: int,
+    ai_reference_answer: str = "",
+    key_points: list = None,
+    policy: dict = None,
+    student_level: str = "Medium",
+) -> list:
+    """
+    Main entry point for per-question evaluation.
+    Delegates to ai_evaluate_per_question (Gemini) with cosine fallback.
+    This replaces the old overall-status-based approach.
+    """
+    # Always use AI evaluation — it checks each question individually
+    return ai_evaluate_per_question(prompt, student_text, student_level)
 
 
 @app.post("/homework/validate")
@@ -1649,7 +1901,7 @@ async def homework_validate(
         # Save annotated PDF even for unreadable (with status shown)
         if is_pdf_submission and original_file_bytes:
             # Show circle mark for unreadable
-            unreadable_result = [{'qid': 'Q1', 'correct': None, 'chosen': 'Unreadable', 'correct_answer': 'N/A'}]
+            unreadable_result = [{'qid': extract_qid_from_prompt(prompt, erp_row), 'correct': None, 'chosen': 'Unreadable', 'correct_answer': 'N/A'}]
             annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                 original_file_bytes, homework_id, student_id, unreadable_result, 0, "Unreadable", student_level
             )
@@ -1675,7 +1927,7 @@ async def homework_validate(
         # Save annotated PDF even for unreadable (with status shown)
         if is_pdf_submission and original_file_bytes:
             # Show circle mark for scanned PDF that needs OCR
-            ocr_result = [{'qid': 'Q1', 'correct': None, 'chosen': 'Needs OCR', 'correct_answer': 'N/A'}]
+            ocr_result = [{'qid': extract_qid_from_prompt(prompt, erp_row), 'correct': None, 'chosen': 'Needs OCR', 'correct_answer': 'N/A'}]
             annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                 original_file_bytes, homework_id, student_id, ocr_result, 0, "Unreadable", student_level
             )
@@ -1971,7 +2223,7 @@ async def homework_validate(
                 # No correct answers in prompt - return needs review with extracted answers
                 # Save annotated PDF with circle mark
                 if is_pdf_submission and original_file_bytes:
-                    no_answer_result = [{'qid': 'Q1', 'correct': None, 'chosen': 'No Answer Key', 'correct_answer': 'N/A'}]
+                    no_answer_result = [{'qid': extract_qid_from_prompt(prompt, erp_row), 'correct': None, 'chosen': 'No Answer Key', 'correct_answer': 'N/A'}]
                     annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                         original_file_bytes, homework_id, student_id, no_answer_result, 0, "Needs Review", student_level
                     )
@@ -1999,7 +2251,7 @@ async def homework_validate(
         elif not correct:
             # Save annotated PDF with circle mark
             if is_pdf_submission and original_file_bytes:
-                no_correct_result = [{'qid': 'Q1', 'correct': None, 'chosen': 'Not Found', 'correct_answer': 'N/A'}]
+                no_correct_result = [{'qid': extract_qid_from_prompt(prompt, erp_row), 'correct': None, 'chosen': 'Not Found', 'correct_answer': 'N/A'}]
                 annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                     original_file_bytes, homework_id, student_id, no_correct_result, 0, "Needs Review", student_level
                 )
@@ -2024,7 +2276,7 @@ async def homework_validate(
         elif not chosen:
             # Save annotated PDF with circle mark
             if is_pdf_submission and original_file_bytes:
-                no_chosen_result = [{'qid': 'Q1', 'correct': None, 'chosen': 'Not Detected', 'correct_answer': correct or 'N/A'}]
+                no_chosen_result = [{'qid': extract_qid_from_prompt(prompt, erp_row), 'correct': None, 'chosen': 'Not Detected', 'correct_answer': correct or 'N/A'}]
                 annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                     original_file_bytes, homework_id, student_id, no_chosen_result, 0, "Needs Review", student_level
                 )
@@ -2063,7 +2315,8 @@ async def homework_validate(
             status = "Verified" if match_percentage >= passing_threshold else "Needs Review"
             
             # Save annotated PDF
-            mcq_results_single = [{'qid': 'Q1', 'correct': is_correct, 'chosen': chosen, 'correct_answer': correct}]
+            _qid = extract_qid_from_prompt(prompt, erp_row)
+            mcq_results_single = [{'qid': _qid, 'correct': is_correct, 'chosen': chosen, 'correct_answer': correct}]
             if is_pdf_submission and original_file_bytes:
                 annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                     original_file_bytes, homework_id, student_id, mcq_results_single, match_percentage, status, student_level
@@ -2259,25 +2512,17 @@ async def homework_validate(
         else:
             rule_based_remark = "Homework does not match the expected answer enough. Please review the topic and resubmit with clearer, complete points."
 
-    # Save annotated PDF for narrative (with status-based circle marking)
-    # Add a placeholder to show it's a narrative question that was evaluated
+    # Save annotated PDF — evaluate EACH question individually against student text
+    per_question_results = build_per_question_results(
+        prompt, student_text, status, match_pct,
+        ai_reference_answer=ai_reference_answer,
+        key_points=key_points,
+        policy=policy,
+        student_level=student_level,
+    )
     if is_pdf_submission and original_file_bytes:
-        # Determine correctness based on status:
-        # - Verified: correct (green checkmark)
-        # - Partial: partially correct (yellow circle)
-        # - Needs Review: incorrect (red circle)
-        if status == "Verified":
-            narrative_correct = True
-        elif status == "Partial":
-            narrative_correct = False  # Will show as yellow circle for partial
-        else:
-            narrative_correct = False  # Will show as red circle for needs review
-        
-        narrative_result = [
-            {'qid': 'Q1', 'correct': narrative_correct, 'chosen': f'Score: {match_pct}%', 'correct_answer': status}
-        ]
         annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
-            original_file_bytes, homework_id, student_id, narrative_result, match_pct, status, student_level, "narrative"
+            original_file_bytes, homework_id, student_id, per_question_results, match_pct, status, student_level, "narrative"
         )
 
     return {
@@ -2299,12 +2544,13 @@ async def homework_validate(
         "key_points": key_points,
         "key_points_covered": covered,
         "key_points_missing": missing,
-        "question_marks": make_question_marks([]),
-            "annotated_pdf": annotated_pdf_filename,
+        "question_marks": make_question_marks(per_question_results),
+        "annotated_pdf": annotated_pdf_filename,
         "debug": {
             "similarity": sim,
             "coverage": coverage,
             "policy": policy,
+            "per_question_results": per_question_results,
             "erp_row_fields": list(erp_row.keys()) if erp_row else [],
             "erp_student_level_raw": erp_row.get("student_level") or erp_row.get("level") or erp_row.get("difficulty") or erp_row.get("difficulty_level"),
         },
