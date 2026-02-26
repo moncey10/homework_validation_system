@@ -1178,17 +1178,8 @@ def create_annotated_pdf(
                 results_by_qid[qid] = r
 
         def _draw_mark(c, x, y, is_correct, is_unattempted, radius=14):
-            if is_unattempted:
-                c.setStrokeColor(colors.Color(1.0, 0.55, 0.0))
-                c.setFillColor(colors.Color(1.0, 0.55, 0.0))
-                c.setLineWidth(3)
-                c.circle(x, y, radius, fill=0)
-            elif is_correct is None:
-                c.setStrokeColor(colors.grey)
-                c.setFillColor(colors.grey)
-                c.setLineWidth(2)
-                c.circle(x, y, radius, fill=0)
-            elif is_correct:
+            if is_correct and not is_unattempted:
+                # ✓ Green filled circle — correct only
                 c.setStrokeColor(colors.Color(0.0, 0.65, 0.0))
                 c.setFillColor(colors.Color(0.0, 0.65, 0.0))
                 c.setLineWidth(2)
@@ -1197,6 +1188,7 @@ def create_annotated_pdf(
                 c.setFont("Helvetica-Bold", int(radius * 1.5))
                 c.drawString(x - radius * 0.5, y - radius * 0.45, "\u2713")
             else:
+                # ✗ Red filled circle — wrong OR unattempted
                 c.setStrokeColor(colors.Color(0.85, 0.1, 0.1))
                 c.setFillColor(colors.Color(0.85, 0.1, 0.1))
                 c.setLineWidth(2)
@@ -1297,32 +1289,20 @@ def create_annotated_pdf(
                 all_detected = [item["qid"] for pg_items in question_positions.values()
                                 for item in pg_items]
                 if all_detected or mcq_results:
-                    correct_count     = sum(1 for r in (mcq_results or []) if r.get("correct"))
-                    wrong_count       = sum(1 for r in (mcq_results or [])
-                                           if not r.get("correct") and not r.get("unattempted")
-                                           and r.get("chosen", ""))
-                    unattempted_count = len(all_detected) - correct_count - wrong_count
-                    total_count       = len(all_detected) or len(mcq_results or [])
+                    correct_count   = sum(1 for r in (mcq_results or []) if r.get("correct"))
+                    incorrect_count = sum(1 for r in (mcq_results or []) if not r.get("correct"))
+                    total_count     = len(all_detected) or len(mcq_results or [])
 
                     c.setFont("Helvetica-Bold", 11)
-                    if question_type == "narrative":
-                        c.drawString(18, page_height - 46,
-                                     f"Narrative Evaluation: Score {match_percentage}%")
-                    else:
-                        c.drawString(18, page_height - 46,
-                                     f"MCQ: {correct_count} correct  |  "
-                                     f"{wrong_count} wrong  |  "
-                                     f"{unattempted_count} unattempted  (of {total_count})")
+                    c.drawString(18, page_height - 46,
+                                 f"Questions: {correct_count} correct  |  {incorrect_count} wrong/unattempted  (of {total_count})")
 
-                    lx = page_width - 240
+                    lx = page_width - 200
                     c.setFont("Helvetica", 9)
                     c.setFillColor(colors.Color(0.0, 0.65, 0.0))
-                    c.drawString(lx,       page_height - 46, "\u2713 Correct")
+                    c.drawString(lx,      page_height - 46, "\u2713 Correct")
                     c.setFillColor(colors.Color(0.85, 0.1, 0.1))
-                    c.drawString(lx + 68,  page_height - 46, "\u2717 Wrong")
-                    c.setFillColor(colors.Color(1.0, 0.55, 0.0))
-                    c.drawString(lx + 130, page_height - 46, "\u25cb Unattempted")
-
+                    c.drawString(lx + 72, page_height - 46, "\u2717 Wrong / Unattempted")
             c.save()
             packet.seek(0)
             overlay_reader = PdfReader(packet)
