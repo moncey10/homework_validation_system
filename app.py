@@ -263,11 +263,16 @@ def _init_gemini_client(key_index: int = 0) -> None:
 
 
 def _is_rate_limit_error(error_msg: str) -> bool:
-    """Check if the error is a rate limit error (429)."""
+    """Check if the error is a rate limit error (429) or service unavailable (503)."""
     if not error_msg:
         return False
     lower = error_msg.lower()
-    return "429" in lower or "rate_limit" in lower or "resource_exhausted" in lower or "rate limit" in lower
+    return ("429" in lower or 
+            "503" in lower or 
+            "rate_limit" in lower or 
+            "resource_exhausted" in lower or 
+            "rate limit" in lower or
+            "unavailable" in lower)
 
 
 def _rotate_to_next_key() -> bool:
@@ -986,6 +991,110 @@ def extract_text_from_pdf(pdf_bytes: bytes, filename: str = "unknown.pdf") -> Di
     return {"text": extracted, "used_ocr": used_ocr, "needs_ocr": False}
 
 
+def get_question_positions_from_pdf(pdf_bytes: bytes) -> Dict[int, List[Dict]]:
+    """
+    Detect question number positions in a PDF.
+    Strategy 1: pypdf text-layer visitor (fast, for PDFs with text layer).
+    Strategy 2: pdf2image + pytesseract OCR (for image-based PDFs).
+    Returns dict mapping page_num -> list of {qid, y_pos, x_pos}
+    where y_pos/x_pos are in PDF coordinate units (origin at bottom-left).
+    """
+    try:
+        from pypdf import PdfReader
+        from io import BytesIO
+
+        reader = PdfReader(BytesIO(pdf_bytes))
+        question_positions: Dict[int, List[Dict]] = {}
+
+        def _normalise_ocr_qid(token: str):
+            t = token.strip().rstrip('.')
+            m = re.match(r'^[Qq]\s*(\d+)$', t)
+            if m:
+                return f"Q{m.group(1)}"
+            ocr_map = {'i': '1', 'I': '1', 'l': '1', 'o': '0', 'O': '0',
+                       'z': '2', 'Z': '2', 's': '5', 'S': '5', 'g': '9'}
+            m2 = re.match(r'^[Qq]([a-zA-Z\d])$', t)
+            if m2:
+                digit = ocr_map.get(m2.group(1), m2.group(1))
+                if digit.isdigit():
+                    return f"Q{digit}"
+            return None
+
+        for page_num, page in enumerate(reader.pages):
+            page_height = float(page.mediabox.height) if hasattr(page.mediabox, 'height') else 792
+            page_width  = float(page.mediabox.width)  if hasattr(page.mediabox, 'width')  else 595
+            found: List[Dict] = []
+            existing_qids: set = set()
+
+            # Strategy 1: text layer
+            try:
+                parts = []
+                def _visitor(text, cm, tm, font_dict, font_size):
+                    if text and text.strip():
+                        x = float(tm[4]) if tm else 0
+                        y = float(tm[5]) if tm else 0
+                        parts.append((text.strip(), x, y))
+                page.extract_text(visitor_text=_visitor)
+                tl_patterns = [
+                    re.compile(r'\bQ\s*(\d+)\b', re.IGNORECASE),
+                    re.compile(r'\bQuestion\s*(\d+)\b', re.IGNORECASE),
+                    re.compile(r'^(\d+)[.):\s]'),
+                ]
+                for text_frag, x, y in parts:
+                    for pat in tl_patterns:
+                        m = pat.match(text_frag)
+                        if m:
+                            qid = f"Q{m.group(1)}"
+                            if qid not in existing_qids:
+                                existing_qids.add(qid)
+                                found.append({'qid': qid, 'y_pos': y, 'x_pos': x})
+                            break
+            except Exception as tl_err:
+                print(f"[WARN] text-layer page {page_num}: {tl_err}")
+
+            # Strategy 2: OCR fallback
+            if not found:
+                try:
+                    from pdf2image import convert_from_bytes as _c2b
+                    import pytesseract
+                    rendered = _c2b(pdf_bytes, dpi=72, first_page=page_num+1, last_page=page_num+1)
+                    if rendered:
+                        img = rendered[0]
+                        img_w, img_h = img.size
+                        scale_x = page_width  / img_w
+                        scale_y = page_height / img_h
+                        ocr_data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
+                        for i, token in enumerate(ocr_data['text']):
+                            if not token or not token.strip():
+                                continue
+                            if int(ocr_data['conf'][i]) < 20:
+                                continue
+                            dm = re.match(r'^[Qq]\s*(\d+)[.:]?$', token.strip())
+                            if dm:
+                                qid = f"Q{dm.group(1)}"
+                            else:
+                                qid = _normalise_ocr_qid(token)
+                            if qid and qid not in existing_qids:
+                                img_x = ocr_data['left'][i]
+                                img_y = ocr_data['top'][i]
+                                img_h_tok = ocr_data['height'][i]
+                                pdf_x = img_x * scale_x
+                                pdf_y = page_height - (img_y + img_h_tok * 0.5) * scale_y
+                                existing_qids.add(qid)
+                                found.append({'qid': qid, 'y_pos': pdf_y, 'x_pos': pdf_x})
+                except Exception as ocr_err:
+                    print(f"[WARN] OCR fallback page {page_num}: {ocr_err}")
+
+            if found:
+                found.sort(key=lambda d: -d['y_pos'])
+                question_positions[page_num] = found
+
+        return question_positions
+
+    except Exception as e:
+        print(f"[WARN] Failed to get question positions: {e}")
+        return {}
+
 def create_annotated_pdf(
     original_pdf_bytes: bytes,
     mcq_results: List[Dict[str, Any]] = None,
@@ -995,204 +1104,199 @@ def create_annotated_pdf(
     question_type: str = "mcq"
 ) -> bytes:
     """
-    Create an annotated PDF with tickmarks showing correct/incorrect answers.
-    
-    Args:
-        original_pdf_bytes: The original PDF file content
-        mcq_results: List of MCQ results with 'correct' and 'qid' fields
-        match_percentage: Overall match percentage
-        status: Validation status
-        student_level: Student level (Easy/Medium/Hard)
-        question_type: Type of question ('mcq' or 'narrative')
-    
-    Returns:
-        Annotated PDF as bytes
+    Annotate every question number found in the PDF with a coloured mark:
+      Correct     -> filled green circle + white tick  (✓)
+      Wrong       -> filled red circle   + white cross (✗)
+      Unattempted -> hollow orange circle              (○)
+
+    Any question detected in the PDF that has NO entry in mcq_results is
+    automatically treated as unattempted (hollow orange circle).
     """
     if not reportlab:
         print("[WARN] reportlab not available, returning original PDF")
         return original_pdf_bytes
-    
+
     try:
         from pypdf import PdfWriter, PdfReader
         from io import BytesIO
-        
-        # Read original PDF
+
+        # ── Detect question positions ──────────────────────────────────────
+        question_positions = get_question_positions_from_pdf(original_pdf_bytes)
+        print(f"[INFO] Detected question positions: {question_positions}")
+
+        # Build lookup: qid -> (page_num, pdf_y, pdf_x)
+        qid_location: Dict[str, tuple] = {}
+        for pg, items in question_positions.items():
+            for item in items:
+                qid_location[item["qid"]] = (pg, item["y_pos"], item["x_pos"])
+
+        # Build a quick lookup from mcq_results: qid -> result dict
+        results_by_qid: Dict[str, Dict] = {}
+        for r in (mcq_results or []):
+            qid = r.get("qid", "")
+            if qid:
+                results_by_qid[qid] = r
+
+        # ── Helpers ────────────────────────────────────────────────────────
+        def _draw_mark(c, x, y, is_correct, is_unattempted, radius=14):
+            """Draw a mark symbol centred at PDF coordinates (x, y)."""
+            if is_unattempted:
+                c.setStrokeColor(colors.Color(1.0, 0.55, 0.0))
+                c.setFillColor(colors.Color(1.0, 0.55, 0.0))
+                c.setLineWidth(3)
+                c.circle(x, y, radius, fill=0)
+            elif is_correct is None:
+                c.setStrokeColor(colors.grey)
+                c.setFillColor(colors.grey)
+                c.setLineWidth(2)
+                c.circle(x, y, radius, fill=0)
+                c.setFont("Helvetica-Bold", int(radius * 0.9))
+                c.drawString(x - radius * 0.3, y - radius * 0.4, "?")
+            elif is_correct:
+                c.setStrokeColor(colors.Color(0.0, 0.65, 0.0))
+                c.setFillColor(colors.Color(0.0, 0.65, 0.0))
+                c.setLineWidth(2)
+                c.circle(x, y, radius, fill=1)
+                c.setFillColor(colors.white)
+                c.setFont("Helvetica-Bold", int(radius * 1.5))
+                c.drawString(x - radius * 0.5, y - radius * 0.45, "\u2713")
+            else:
+                c.setStrokeColor(colors.Color(0.85, 0.1, 0.1))
+                c.setFillColor(colors.Color(0.85, 0.1, 0.1))
+                c.setLineWidth(2)
+                c.circle(x, y, radius, fill=1)
+                c.setFillColor(colors.white)
+                c.setFont("Helvetica-Bold", int(radius * 1.5))
+                c.drawString(x - radius * 0.5, y - radius * 0.45, "\u2717")
+
+        MARK_RADIUS = 14
+        # Mark is drawn just to the LEFT of the detected Q-number text
+        # x_pos from detection = left edge of "Q1." text; offset left by radius+4
+        MARK_X_OFFSET = -(MARK_RADIUS + 4)
+
         original_reader = PdfReader(BytesIO(original_pdf_bytes))
         writer = PdfWriter()
-        
-        # Process each page
+        total_pages = len(original_reader.pages)
+
         for page_num, page in enumerate(original_reader.pages):
-            # Get page dimensions
-            page_width = float(page.mediabox.width)
+            page_width  = float(page.mediabox.width)
             page_height = float(page.mediabox.height)
-            
-            # Create overlay canvas for annotations
+
             packet = BytesIO()
             c = canvas.Canvas(packet, pagesize=(page_width, page_height))
-            
-            # Draw tickmarks for MCQ questions
-            # Position marks along the right margin
-            if mcq_results:
-                y_start = page_height - 50
-                y_spacing = 30
-                
-                # Calculate which questions to show on this page
-                # (show first few on first page, rest on subsequent pages)
-                marks_per_page = int((page_height - 100) / y_spacing)
-                
-                start_idx = page_num * marks_per_page
-                end_idx = min(start_idx + marks_per_page, len(mcq_results))
-                
-                for i in range(start_idx, end_idx):
-                    result = mcq_results[i]
-                    qid = result.get('qid', f'Q{i+1}')
-                    is_correct = result.get('correct', False)
-                    
-                    y_pos = y_start - ((i - start_idx) * y_spacing)
-                    x_pos = page_width - 60
-                    
-                    # Draw marks based on question type and correctness
-                    # Three states:
-                    #   unattempted=True  → plain CIRCLE (orange) — question was skipped
-                    #   correct=True      → TICK ✓ (green) — answered correctly
-                    #   correct=False     → CROSS ✗ (red) — answered incorrectly
-                    is_unattempted = result.get('unattempted', False)
 
-                    if is_unattempted:
-                        # Plain circle — unattempted question
-                        c.setStrokeColor(colors.Color(1.0, 0.55, 0.0))  # orange
-                        c.setFillColor(colors.Color(1.0, 0.55, 0.0))
-                        c.setLineWidth(2.5)
-                        c.circle(x_pos, y_pos, 12, fill=0)
-                        # No symbol inside — the empty circle IS the mark
+            # ── Draw a mark for every detected question on this page ────────
+            page_detected = question_positions.get(page_num, [])
 
-                    elif question_type == "narrative":
-                        # Narrative: green tick for Verified, red circle for others
-                        if is_correct:
-                            c.setStrokeColor(colors.green)
-                            c.setFillColor(colors.green)
-                            c.setLineWidth(2)
-                            c.circle(x_pos, y_pos, 12, fill=0)
-                            c.setFont("Helvetica-Bold", 14)
-                            c.drawString(x_pos - 5, y_pos - 5, "✓")
-                        elif status == "Partial":
-                            c.setStrokeColor(colors.orange)
-                            c.setFillColor(colors.orange)
-                            c.setLineWidth(2)
-                            c.circle(x_pos, y_pos, 12, fill=0)
-                        else:
-                            c.setStrokeColor(colors.red)
-                            c.setFillColor(colors.red)
-                            c.setLineWidth(2)
-                            c.circle(x_pos, y_pos, 12, fill=0)
+            for item in page_detected:
+                qid   = item["qid"]
+                y_pos = item["y_pos"]
+                x_pos = item["x_pos"]
 
-                    else:
-                        # MCQ: tick for correct, cross for wrong, ? for unreadable
-                        if is_correct:
-                            # Green tick
-                            c.setStrokeColor(colors.green)
-                            c.setFillColor(colors.green)
-                            c.setLineWidth(2)
-                            c.circle(x_pos, y_pos, 12, fill=0)
-                            c.setFont("Helvetica-Bold", 14)
-                            c.drawString(x_pos - 5, y_pos - 5, "✓")
-                        elif is_correct is None:
-                            # Orange circle with ? — unreadable / no answer key
-                            c.setStrokeColor(colors.orange)
-                            c.setFillColor(colors.orange)
-                            c.setLineWidth(2)
-                            c.circle(x_pos, y_pos, 12, fill=0)
-                            c.setFont("Helvetica-Bold", 12)
-                            c.drawString(x_pos - 4, y_pos - 5, "?")
-                        else:
-                            # Red cross — wrong answer
-                            c.setStrokeColor(colors.red)
-                            c.setFillColor(colors.red)
-                            c.setLineWidth(2)
-                            c.circle(x_pos, y_pos, 12, fill=0)
-                            c.setFont("Helvetica-Bold", 14)
-                            c.drawString(x_pos - 5, y_pos - 5, "✗")
-                    
-                    # Draw question label
-                    c.setStrokeColor(colors.black)
-                    c.setFillColor(colors.black)
-                    c.setFont("Helvetica", 8)
-                    c.drawString(x_pos - 35, y_pos - 3, str(qid))
-            
-            # Add header with summary on first page
+                # Get result for this qid (default = unattempted if not in results)
+                result         = results_by_qid.get(qid)
+                is_unattempted = True   # default: no result entry = unattempted
+                is_correct     = False
+
+                if result is not None:
+                    is_unattempted = bool(result.get("unattempted", False))
+                    is_correct     = result.get("correct", False)
+                    # If no explicit unattempted flag but chosen is empty -> unattempted
+                    if not is_unattempted and not result.get("chosen", ""):
+                        is_unattempted = True
+
+                mark_x = max(MARK_RADIUS + 2, x_pos + MARK_X_OFFSET)
+                mark_y = y_pos + MARK_RADIUS * 0.3
+                _draw_mark(c, mark_x, mark_y, is_correct, is_unattempted, MARK_RADIUS)
+
+            # ── Fallback marks for results whose qid was NOT detected ───────
+            # (edge case: question number in results but OCR/text-layer missed it)
+            undetected_results = [r for r in (mcq_results or [])
+                                  if r.get("qid") not in qid_location]
+            if undetected_results:
+                per_page  = max(1, (len(undetected_results) + total_pages - 1) // total_pages)
+                start_idx = page_num * per_page
+                page_slice = undetected_results[start_idx: start_idx + per_page]
+                y_start   = page_height - 100
+                y_spacing = max(20, (page_height - 130) / max(1, per_page))
+                for i, result in enumerate(page_slice):
+                    is_unattempted = bool(result.get("unattempted", False))
+                    if not is_unattempted and not result.get("chosen", ""):
+                        is_unattempted = True
+                    is_correct = result.get("correct", False)
+                    y_pos = y_start - i * y_spacing
+                    if y_pos < 30:
+                        break
+                    _draw_mark(c, 18, y_pos, is_correct, is_unattempted, 9)
+
+            # ── Header bar (first page) ─────────────────────────────────────
             if page_num == 0:
-                # Draw header background
-                c.setFillColor(colors.lightgrey)
-                c.rect(0, page_height - 60, page_width, 60, fill=1, stroke=0)
-                
-                # Draw status circle and text - LARGER FONT
-                c.setFillColor(colors.black)
-                c.setFont("Helvetica-Bold", 20)
-                
-                # Determine circle color based on status
+                header_h = 58
+                c.setFillColor(colors.Color(0.93, 0.93, 0.93))
+                c.rect(0, page_height - header_h, page_width, header_h, fill=1, stroke=0)
+
                 if status == "Verified":
-                    status_circle_color = colors.green
+                    sc = colors.Color(0.0, 0.65, 0.0)
                 elif status == "Partial":
-                    status_circle_color = colors.orange
+                    sc = colors.Color(1.0, 0.55, 0.0)
                 else:
-                    status_circle_color = colors.red
-                
-                # Draw status circle
-                c.setStrokeColor(status_circle_color)
-                c.setFillColor(status_circle_color)
-                c.setLineWidth(3)
-                c.circle(25, page_height - 25, 10, fill=1)
-                
-                # Draw status text
-                c.setFillColor(status_circle_color)
-                c.drawString(45, page_height - 30, f"Status: {status}")
-                
+                    sc = colors.Color(0.85, 0.1, 0.1)
+
+                c.setFillColor(sc); c.setStrokeColor(sc)
+                c.circle(18, page_height - 22, 8, fill=1)
+                c.setFont("Helvetica-Bold", 14)
+                c.drawString(34, page_height - 27, f"Status: {status}")
+
                 c.setFillColor(colors.black)
-                c.setFont("Helvetica-Bold", 18)
-                c.drawString(250, page_height - 30, f"Score: {match_percentage}%")
-                c.drawString(450, page_height - 30, f"Level: {student_level}")
-                
-                # Draw MCQ summary
-                if mcq_results:
-                    correct_count = sum(1 for r in mcq_results if r.get('correct'))
-                    unattempted_count = sum(1 for r in mcq_results if r.get('unattempted'))
-                    total_count = len(mcq_results)
-                    c.setFont("Helvetica-Bold", 14)
+                c.setFont("Helvetica-Bold", 14)
+                c.drawString(page_width * 0.42, page_height - 27, f"Score: {match_percentage}%")
+                c.drawString(page_width * 0.72, page_height - 27, f"Level: {student_level}")
+
+                if mcq_results or page_detected:
+                    # Count across ALL detected questions (not just those in results)
+                    all_qids_detected = [item["qid"] for pg_items in question_positions.values()
+                                         for item in pg_items]
+                    correct_count     = sum(1 for r in (mcq_results or []) if r.get("correct"))
+                    wrong_count       = sum(1 for r in (mcq_results or [])
+                                           if not r.get("correct") and not r.get("unattempted")
+                                           and r.get("chosen", ""))
+                    unattempted_count = len(all_qids_detected) - correct_count - wrong_count
+                    total_count       = len(all_qids_detected) or len(mcq_results or [])
+
+                    c.setFont("Helvetica-Bold", 11)
                     if question_type == "narrative":
-                        c.drawString(30, page_height - 50, f"Narrative Evaluation: Score {match_percentage}%")
+                        c.drawString(18, page_height - 46,
+                                     f"Narrative Evaluation: Score {match_percentage}%")
                     else:
-                        c.drawString(30, page_height - 50, f"MCQ: {correct_count}/{total_count} correct")
-                    
-                    # Legend: ✓ Correct  ✗ Wrong  ○ Unattempted
-                    legend_x = page_width - 220
+                        c.drawString(18, page_height - 46,
+                                     f"MCQ: {correct_count} correct  |  "
+                                     f"{wrong_count} wrong  |  "
+                                     f"{unattempted_count} unattempted  (of {total_count})")
+
+                    lx = page_width - 240
                     c.setFont("Helvetica", 9)
-                    c.setFillColor(colors.green)
-                    c.drawString(legend_x, page_height - 50, "✓ Correct")
-                    c.setFillColor(colors.red)
-                    c.drawString(legend_x + 70, page_height - 50, "✗ Wrong")
+                    c.setFillColor(colors.Color(0.0, 0.65, 0.0))
+                    c.drawString(lx,       page_height - 46, "\u2713 Correct")
+                    c.setFillColor(colors.Color(0.85, 0.1, 0.1))
+                    c.drawString(lx + 68,  page_height - 46, "\u2717 Wrong")
                     c.setFillColor(colors.Color(1.0, 0.55, 0.0))
-                    c.drawString(legend_x + 135, page_height - 50, "○ Unattempted")
-            
+                    c.drawString(lx + 130, page_height - 46, "\u25cb Unattempted")
+
             c.save()
             packet.seek(0)
-            
-            # Merge overlay with original page
             overlay_reader = PdfReader(packet)
             if overlay_reader.pages:
                 page.merge_page(overlay_reader.pages[0])
-            
             writer.add_page(page)
-        
-        # Write the final PDF
+
         output = BytesIO()
         writer.write(output)
         output.seek(0)
         return output.read()
-        
+
     except Exception as e:
         print(f"[ERROR] Failed to create annotated PDF: {e}")
         return original_pdf_bytes
-
 
 async def extract_text_from_upload(file: UploadFile) -> Dict[str, Any]:
     filename = getattr(file, "filename", "") or "upload"
