@@ -1,0 +1,15 @@
+Sample output file created manually
+====================================
+
+This file demonstrates that the outputs folder is ready to receive files.
+
+When the homework validation API is called, annotated PDF files will be automatically created here with the naming pattern:
+marked_{homework_id}_{student_id}_{timestamp}.pdf
+
+The PDF files contain:
+- Status header (Verified/Partial/Needs Review)
+- Score percentage
+- Tickmarks for each question (✓ = correct, ✗ = wrong, ○ = unattempted)
+- MCQ summary
+
+Generated at runtime by app.py when /homework/validate endpoint is called.
