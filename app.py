@@ -1,4 +1,3 @@
-
 # app.py
 import os
 import io
@@ -11,7 +10,11 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageOps, ImageFilter
 import pytesseract
+import os
 
+# Serve static files from outputs directory
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -64,12 +67,13 @@ except Exception as e:
 
 
 app = FastAPI()
+app.mount("/files", StaticFiles(directory="outputs"), name="files")
 
-import os
 
-# Serve static files from outputs directory
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+outputs_dir = "outputs"
+os.makedirs(outputs_dir, exist_ok=True)
+
+app.mount("/outputs", StaticFiles(directory=outputs_dir), name="outputs")
 
 # Create outputs directory if it doesn't exist
 outputs_dir = os.path.join(os.path.dirname(__file__), "outputs")
@@ -83,6 +87,13 @@ async def get_output_file(filename: str):
         return FileResponse(filepath)
     raise HTTPException(status_code=404, detail="File not found")
 
+@app.get("/storage/{filename}")
+async def get_storsge_file(filename:str):
+    """Serve files from the storage directory."""
+    filepath = os.path.join(outputs_dir, filename)
+    if os.path.exists(filepath):
+        return FileResponse(filepath)
+    raise HTTPException(status_code=404, detail="File not found")
 @app.get("/debug/env")
 def debug_env():
     return {
@@ -111,6 +122,66 @@ ERP_BASE = os.getenv("ERP_BASE", "https://erp.triz.co.in/lms_data")
 STORAGE_BASE = os.getenv("STORAGE_BASE", "https://erp.triz.co.in/storage/student/")
 ERP_TOKEN = os.getenv("ERP_TOKEN", "")
 
+
+def get_public_base_url() -> str:
+    """
+    Returns the public base URL of this server.
+    Priority:
+      1. SPACE_HOST  — set automatically by Hugging Face Spaces (most reliable)
+      2. HF_SPACE    — manual fallback env var for HF
+      3. APP_BASE_URL — custom deployment domain
+      4. localhost   — local dev only
+    """
+    hf_host = os.getenv("SPACE_HOST", "").strip()
+    if hf_host:
+        return f"https://{hf_host}"
+
+    hf_space = os.getenv("HF_SPACE", "").strip()
+    if hf_space:
+        return f"https://{hf_space}"
+
+    custom = os.getenv("APP_BASE_URL", "").strip()
+    if custom:
+        return custom.rstrip("/")
+
+    return "http://127.0.0.1:7860"
+
+
+def build_pdf_url(filename: str) -> str:
+    """Given a saved PDF filename, return its full public URL."""
+    if not filename:
+        return ""
+    return f"{get_public_base_url()}/outputs/{filename}"
+
+
+def make_question_marks(mcq_results: list) -> list:
+    """
+    Convert internal mcq_results into a clean list the frontend can use
+    to show ✓ ✗ ○ next to each question number.
+
+    Each item:
+      {
+        "qid":            "Q1",
+        "mark":           "correct" | "wrong" | "unattempted",
+        "student_answer": "A",          # what the student chose (empty if unattempted)
+        "correct_answer": "B"           # the right answer (null if unknown)
+      }
+    """
+    result = []
+    for r in (mcq_results or []):
+        if r.get('unattempted'):
+            mark = "unattempted"
+        elif r.get('correct') is True:
+            mark = "correct"
+        else:
+            mark = "wrong"
+        result.append({
+            "qid":            r.get('qid', ''),
+            "mark":           mark,
+            "student_answer": r.get('chosen', ''),
+            "correct_answer": r.get('correct_answer'),
+        })
+    return result
 
 
 # API Key Rotation - Support multiple API keys for higher limits
@@ -920,7 +991,8 @@ def create_annotated_pdf(
     mcq_results: List[Dict[str, Any]] = None,
     match_percentage: int = 0,
     status: str = "Needs Review",
-    student_level: str = "Medium"
+    student_level: str = "Medium",
+    question_type: str = "mcq"
 ) -> bytes:
     """
     Create an annotated PDF with tickmarks showing correct/incorrect answers.
@@ -931,6 +1003,7 @@ def create_annotated_pdf(
         match_percentage: Overall match percentage
         status: Validation status
         student_level: Student level (Easy/Medium/Hard)
+        question_type: Type of question ('mcq' or 'narrative')
     
     Returns:
         Annotated PDF as bytes
@@ -978,23 +1051,67 @@ def create_annotated_pdf(
                     y_pos = y_start - ((i - start_idx) * y_spacing)
                     x_pos = page_width - 60
                     
-                    # Draw tick or cross
-                    if is_correct:
-                        # Green checkmark
-                        c.setStrokeColor(colors.green)
-                        c.setFillColor(colors.green)
-                        c.setLineWidth(2)
+                    # Draw marks based on question type and correctness
+                    # Three states:
+                    #   unattempted=True  → plain CIRCLE (orange) — question was skipped
+                    #   correct=True      → TICK ✓ (green) — answered correctly
+                    #   correct=False     → CROSS ✗ (red) — answered incorrectly
+                    is_unattempted = result.get('unattempted', False)
+
+                    if is_unattempted:
+                        # Plain circle — unattempted question
+                        c.setStrokeColor(colors.Color(1.0, 0.55, 0.0))  # orange
+                        c.setFillColor(colors.Color(1.0, 0.55, 0.0))
+                        c.setLineWidth(2.5)
                         c.circle(x_pos, y_pos, 12, fill=0)
-                        c.setFont("Helvetica-Bold", 14)
-                        c.drawString(x_pos - 5, y_pos - 5, "✓")
+                        # No symbol inside — the empty circle IS the mark
+
+                    elif question_type == "narrative":
+                        # Narrative: green tick for Verified, red circle for others
+                        if is_correct:
+                            c.setStrokeColor(colors.green)
+                            c.setFillColor(colors.green)
+                            c.setLineWidth(2)
+                            c.circle(x_pos, y_pos, 12, fill=0)
+                            c.setFont("Helvetica-Bold", 14)
+                            c.drawString(x_pos - 5, y_pos - 5, "✓")
+                        elif status == "Partial":
+                            c.setStrokeColor(colors.orange)
+                            c.setFillColor(colors.orange)
+                            c.setLineWidth(2)
+                            c.circle(x_pos, y_pos, 12, fill=0)
+                        else:
+                            c.setStrokeColor(colors.red)
+                            c.setFillColor(colors.red)
+                            c.setLineWidth(2)
+                            c.circle(x_pos, y_pos, 12, fill=0)
+
                     else:
-                        # Red X mark
-                        c.setStrokeColor(colors.red)
-                        c.setFillColor(colors.red)
-                        c.setLineWidth(2)
-                        c.circle(x_pos, y_pos, 12, fill=0)
-                        c.setFont("Helvetica-Bold", 14)
-                        c.drawString(x_pos - 5, y_pos - 5, "✗")
+                        # MCQ: tick for correct, cross for wrong, ? for unreadable
+                        if is_correct:
+                            # Green tick
+                            c.setStrokeColor(colors.green)
+                            c.setFillColor(colors.green)
+                            c.setLineWidth(2)
+                            c.circle(x_pos, y_pos, 12, fill=0)
+                            c.setFont("Helvetica-Bold", 14)
+                            c.drawString(x_pos - 5, y_pos - 5, "✓")
+                        elif is_correct is None:
+                            # Orange circle with ? — unreadable / no answer key
+                            c.setStrokeColor(colors.orange)
+                            c.setFillColor(colors.orange)
+                            c.setLineWidth(2)
+                            c.circle(x_pos, y_pos, 12, fill=0)
+                            c.setFont("Helvetica-Bold", 12)
+                            c.drawString(x_pos - 4, y_pos - 5, "?")
+                        else:
+                            # Red cross — wrong answer
+                            c.setStrokeColor(colors.red)
+                            c.setFillColor(colors.red)
+                            c.setLineWidth(2)
+                            c.circle(x_pos, y_pos, 12, fill=0)
+                            c.setFont("Helvetica-Bold", 14)
+                            c.drawString(x_pos - 5, y_pos - 5, "✗")
                     
                     # Draw question label
                     c.setStrokeColor(colors.black)
@@ -1008,15 +1125,27 @@ def create_annotated_pdf(
                 c.setFillColor(colors.lightgrey)
                 c.rect(0, page_height - 60, page_width, 60, fill=1, stroke=0)
                 
-                # Draw status text - LARGER FONT
+                # Draw status circle and text - LARGER FONT
                 c.setFillColor(colors.black)
                 c.setFont("Helvetica-Bold", 20)
                 
-                status_color = colors.green if status == "Verified" else (
-                    colors.orange if status == "Partial" else colors.red
-                )
-                c.setFillColor(status_color)
-                c.drawString(30, page_height - 30, f"Status: {status}")
+                # Determine circle color based on status
+                if status == "Verified":
+                    status_circle_color = colors.green
+                elif status == "Partial":
+                    status_circle_color = colors.orange
+                else:
+                    status_circle_color = colors.red
+                
+                # Draw status circle
+                c.setStrokeColor(status_circle_color)
+                c.setFillColor(status_circle_color)
+                c.setLineWidth(3)
+                c.circle(25, page_height - 25, 10, fill=1)
+                
+                # Draw status text
+                c.setFillColor(status_circle_color)
+                c.drawString(45, page_height - 30, f"Status: {status}")
                 
                 c.setFillColor(colors.black)
                 c.setFont("Helvetica-Bold", 18)
@@ -1026,9 +1155,23 @@ def create_annotated_pdf(
                 # Draw MCQ summary
                 if mcq_results:
                     correct_count = sum(1 for r in mcq_results if r.get('correct'))
+                    unattempted_count = sum(1 for r in mcq_results if r.get('unattempted'))
                     total_count = len(mcq_results)
                     c.setFont("Helvetica-Bold", 14)
-                    c.drawString(30, page_height - 50, f"MCQ: {correct_count}/{total_count} correct")
+                    if question_type == "narrative":
+                        c.drawString(30, page_height - 50, f"Narrative Evaluation: Score {match_percentage}%")
+                    else:
+                        c.drawString(30, page_height - 50, f"MCQ: {correct_count}/{total_count} correct")
+                    
+                    # Legend: ✓ Correct  ✗ Wrong  ○ Unattempted
+                    legend_x = page_width - 220
+                    c.setFont("Helvetica", 9)
+                    c.setFillColor(colors.green)
+                    c.drawString(legend_x, page_height - 50, "✓ Correct")
+                    c.setFillColor(colors.red)
+                    c.drawString(legend_x + 70, page_height - 50, "✗ Wrong")
+                    c.setFillColor(colors.Color(1.0, 0.55, 0.0))
+                    c.drawString(legend_x + 135, page_height - 50, "○ Unattempted")
             
             c.save()
             packet.seek(0)
@@ -1132,7 +1275,7 @@ async def get_annotated_pdf_url(
     Get the URL for the annotated PDF.
     Returns JSON with the URL that can be used in your frontend.
     """
-    base_url = os.getenv("APP_BASE_URL", "http://127.0.0.1:8000")
+    base_url = get_public_base_url()
     return {
         "homework_id": homework_id,
         "student_id": student_id,
@@ -1214,12 +1357,26 @@ async def get_annotated_pdf(
                                 'qid': qid,
                                 'chosen': student_ans,
                                 'correct_answer': pq.get('correct_answer'),
-                                'correct': is_correct
+                                'correct': is_correct,
+                                'unattempted': False
                             })
                             matched = True
                             break
                     if not matched:
-                        mcq_results.append({'qid': qid, 'chosen': student_ans, 'correct_answer': None, 'correct': False})
+                        mcq_results.append({'qid': qid, 'chosen': student_ans, 'correct_answer': None, 'correct': False, 'unattempted': False})
+                
+                # Mark questions from the prompt that the student never answered
+                answered_nums = {r['qid'].replace('Q', '').strip() for r in mcq_results}
+                for pq in mcq_questions_with_answers:
+                    pq_num = pq.get('qid', '').replace('Q', '').strip()
+                    if pq_num not in answered_nums:
+                        mcq_results.append({
+                            'qid': pq.get('qid'),
+                            'chosen': '',
+                            'correct_answer': pq.get('correct_answer'),
+                            'correct': False,
+                            'unattempted': True
+                        })
                 
                 if mcq_results:
                     correct_count = sum(1 for r in mcq_results if r.get('correct'))
@@ -1271,6 +1428,18 @@ async def get_annotated_pdf(
                         status = "Partial"
                     else:
                         status = "Needs Review"
+                    
+                    # Create result for narrative to show in PDF
+                    if status == "Verified":
+                        narrative_correct = True
+                    elif status == "Partial":
+                        narrative_correct = False
+                    else:
+                        narrative_correct = False
+                    
+                    mcq_results = [
+                        {'qid': 'Q1', 'correct': narrative_correct, 'chosen': f'Score: {match_percentage}%', 'correct_answer': status}
+                    ]
                 except Exception as e:
                     print(f"[WARN] Failed to calculate narrative score: {e}")
         
@@ -1280,7 +1449,8 @@ async def get_annotated_pdf(
             mcq_results=mcq_results,
             match_percentage=match_percentage,
             status=status,
-            student_level=student_level
+            student_level=student_level,
+            question_type=final_question_type
         )
         
         # Return as file download
@@ -1341,15 +1511,17 @@ async def homework_validate(
     
     # Initialize annotated PDF filename
     annotated_pdf_filename = None
+    annotated_pdf_url = None
     
-    # Function to save annotated PDF
-    def save_annotated_pdf(pdf_bytes, hw_id, stud_id, results, score, stat, lvl):
+    # Function to save annotated PDF — returns (filename, public_url)
+    def save_annotated_pdf(pdf_bytes, hw_id, stud_id, results, score, stat, lvl, qtype="mcq"):
         if not pdf_bytes or len(pdf_bytes) < 100:
-            return None
+            return None, None
         try:
             outputs_dir = os.path.join(os.path.dirname(__file__), "outputs")
             os.makedirs(outputs_dir, exist_ok=True)
-            filename = f"marked_{hw_id}_{stud_id}.pdf"
+            ts = int(time.time())
+            filename = f"marked_{hw_id}_{stud_id}_{ts}.pdf"
             filepath = os.path.join(outputs_dir, filename)
             
             annotated = create_annotated_pdf(
@@ -1357,22 +1529,25 @@ async def homework_validate(
                 mcq_results=results,
                 match_percentage=score,
                 status=stat,
-                student_level=lvl
+                student_level=lvl,
+                question_type=qtype
             )
             
             with open(filepath, "wb") as f:
                 f.write(annotated)
-            return filename
+            return filename, build_pdf_url(filename)
         except Exception as e:
             print(f"[WARN] Failed to save annotated PDF: {e}")
-            return None
+            return None, None
 
     MIN_WORDS = 3 if final_question_type == "mcq" else 8
     if len(student_text.split()) < MIN_WORDS:
         # Save annotated PDF even for unreadable (with status shown)
         if is_pdf_submission and original_file_bytes:
-            annotated_pdf_filename = save_annotated_pdf(
-                original_file_bytes, homework_id, student_id, [], 0, "Unreadable", student_level
+            # Show circle mark for unreadable
+            unreadable_result = [{'qid': 'Q1', 'correct': None, 'chosen': 'Unreadable', 'correct_answer': 'N/A'}]
+            annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
+                original_file_bytes, homework_id, student_id, unreadable_result, 0, "Unreadable", student_level
             )
         return {
             "student_id": student_id,
@@ -1387,6 +1562,7 @@ async def homework_validate(
             "rule_based_remark": "Answer text could not be read clearly. Please upload a clearer file.",
             "student_extracted_text": student_text,
             "llm_used": False,
+            "question_marks": make_question_marks([]),
             "annotated_pdf": annotated_pdf_filename,
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
@@ -1394,8 +1570,10 @@ async def homework_validate(
     if student_info.get("needs_ocr") and not student_text:
         # Save annotated PDF even for unreadable (with status shown)
         if is_pdf_submission and original_file_bytes:
-            annotated_pdf_filename = save_annotated_pdf(
-                original_file_bytes, homework_id, student_id, [], 0, "Unreadable", student_level
+            # Show circle mark for scanned PDF that needs OCR
+            ocr_result = [{'qid': 'Q1', 'correct': None, 'chosen': 'Needs OCR', 'correct_answer': 'N/A'}]
+            annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
+                original_file_bytes, homework_id, student_id, ocr_result, 0, "Unreadable", student_level
             )
         return {
             "student_id": student_id,
@@ -1410,6 +1588,7 @@ async def homework_validate(
             "rule_based_remark": "This PDF looks scanned. OCR is required (install pdf2image + poppler) or upload a clearer file.",
             "student_extracted_text": student_text,
             "llm_used": False,
+            "question_marks": make_question_marks([]),
             "annotated_pdf": annotated_pdf_filename,
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
@@ -1444,7 +1623,17 @@ async def homework_validate(
                         'qid': qid,
                         'correct': is_correct,
                         'chosen': chosen,
-                        'correct_answer': correct
+                        'correct_answer': correct,
+                        'unattempted': False
+                    })
+                elif correct and not chosen:
+                    # Student didn't answer this question at all
+                    mcq_results.append({
+                        'qid': qid,
+                        'correct': False,
+                        'chosen': '',
+                        'correct_answer': correct,
+                        'unattempted': True
                     })
         
         # For narrative questions, use AI to generate reference
@@ -1535,7 +1724,7 @@ async def homework_validate(
         
         # Save annotated PDF
         if is_pdf_submission and original_file_bytes and mcq_results:
-            annotated_pdf_filename = save_annotated_pdf(
+            annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                 original_file_bytes, homework_id, student_id, mcq_results, final_score, status, student_level
             )
         
@@ -1554,6 +1743,7 @@ async def homework_validate(
             "student_extracted_text": student_text,
             "mcq_results": mcq_results,
             "narrative_results": narrative_results,
+            "question_marks": make_question_marks(mcq_results),
             "annotated_pdf": annotated_pdf_filename,
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
             "debug": {
@@ -1615,7 +1805,8 @@ async def homework_validate(
                                 'qid': qid,
                                 'chosen': student_ans,
                                 'correct_answer': pq.get('correct_answer'),
-                                'correct': is_correct
+                                'correct': is_correct,
+                                'unattempted': False
                             })
                             matched = True
                             break
@@ -1624,7 +1815,21 @@ async def homework_validate(
                             'qid': qid,
                             'chosen': student_ans,
                             'correct_answer': None,
-                            'correct': False
+                            'correct': False,
+                            'unattempted': False
+                        })
+                
+                # Add any questions from the prompt that the student never answered
+                answered_nums = {r['qid'].replace('Q', '').strip() for r in mcq_results}
+                for pq in mcq_questions_with_answers:
+                    pq_num = pq.get('qid', '').replace('Q', '').strip()
+                    if pq_num not in answered_nums:
+                        mcq_results.append({
+                            'qid': pq.get('qid'),
+                            'chosen': '',
+                            'correct_answer': pq.get('correct_answer'),
+                            'correct': False,
+                            'unattempted': True
                         })
                 
                 # Calculate score based on level
@@ -1636,7 +1841,7 @@ async def homework_validate(
                 
                 # Save annotated PDF
                 if is_pdf_submission and original_file_bytes:
-                    annotated_pdf_filename = save_annotated_pdf(
+                    annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                         original_file_bytes, homework_id, student_id, mcq_results, match_percentage, status, student_level
                     )
                 
@@ -1653,16 +1858,18 @@ async def homework_validate(
                     "rule_based_remark": f"Multiple MCQ: {correct_count}/{total_count} correct. Score: {match_percentage}% (Level: {student_level})",
                     "student_extracted_text": student_text,
                     "llm_used": False,
-                    "annotated_pdf": annotated_pdf_filename,
+                    "question_marks": make_question_marks(mcq_results),
+            "annotated_pdf": annotated_pdf_filename,
                     "debug": {"student_answers": student_answers_by_qid, "mcq_results": mcq_results},
                     "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
                 }
             else:
                 # No correct answers in prompt - return needs review with extracted answers
-                # Save annotated PDF
+                # Save annotated PDF with circle mark
                 if is_pdf_submission and original_file_bytes:
-                    annotated_pdf_filename = save_annotated_pdf(
-                        original_file_bytes, homework_id, student_id, [], 0, "Needs Review", student_level
+                    no_answer_result = [{'qid': 'Q1', 'correct': None, 'chosen': 'No Answer Key', 'correct_answer': 'N/A'}]
+                    annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
+                        original_file_bytes, homework_id, student_id, no_answer_result, 0, "Needs Review", student_level
                     )
                 return {
                     "student_id": student_id,
@@ -1677,7 +1884,8 @@ async def homework_validate(
                     "rule_based_remark": f"Found {len(student_answers_by_qid)} MCQ answers but no correct answers in prompt. Include 'Correct: B' for each question.",
                     "student_extracted_text": student_text,
                     "llm_used": False,
-                    "annotated_pdf": annotated_pdf_filename,
+                    "question_marks": make_question_marks([]),
+            "annotated_pdf": annotated_pdf_filename,
                     "debug": {"student_answers": student_answers_by_qid, "correct_answers_in_prompt": False},
                     "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
                 }
@@ -1685,10 +1893,11 @@ async def homework_validate(
         if redirect_to_narrative:
             pass  # Will continue to narrative handling
         elif not correct:
-            # Save annotated PDF
+            # Save annotated PDF with circle mark
             if is_pdf_submission and original_file_bytes:
-                annotated_pdf_filename = save_annotated_pdf(
-                    original_file_bytes, homework_id, student_id, [], 0, "Needs Review", student_level
+                no_correct_result = [{'qid': 'Q1', 'correct': None, 'chosen': 'Not Found', 'correct_answer': 'N/A'}]
+                annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
+                    original_file_bytes, homework_id, student_id, no_correct_result, 0, "Needs Review", student_level
                 )
             return {
                 "student_id": student_id,
@@ -1703,15 +1912,17 @@ async def homework_validate(
                 "rule_based_remark": "MCQ correct option not found in prompt. Include 'Correct: B' or similar in prompt.",
                 "student_extracted_text": student_text,
                 "llm_used": False,
-                "annotated_pdf": annotated_pdf_filename,
+                "question_marks": make_question_marks([]),
+            "annotated_pdf": annotated_pdf_filename,
                 "debug": {"correct": correct, "chosen": chosen},
                 "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
             }
         elif not chosen:
-            # Save annotated PDF
+            # Save annotated PDF with circle mark
             if is_pdf_submission and original_file_bytes:
-                annotated_pdf_filename = save_annotated_pdf(
-                    original_file_bytes, homework_id, student_id, [], 0, "Needs Review", student_level
+                no_chosen_result = [{'qid': 'Q1', 'correct': None, 'chosen': 'Not Detected', 'correct_answer': correct or 'N/A'}]
+                annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
+                    original_file_bytes, homework_id, student_id, no_chosen_result, 0, "Needs Review", student_level
                 )
             return {
                 "student_id": student_id,
@@ -1726,7 +1937,8 @@ async def homework_validate(
                 "rule_based_remark": "Student option (A/B/C/D) not detected clearly.",
                 "student_extracted_text": student_text,
                 "llm_used": False,
-                "annotated_pdf": annotated_pdf_filename,
+                "question_marks": make_question_marks([]),
+            "annotated_pdf": annotated_pdf_filename,
                 "debug": {"correct": correct, "chosen": chosen},
                 "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
             }
@@ -1749,7 +1961,7 @@ async def homework_validate(
             # Save annotated PDF
             mcq_results_single = [{'qid': 'Q1', 'correct': is_correct, 'chosen': chosen, 'correct_answer': correct}]
             if is_pdf_submission and original_file_bytes:
-                annotated_pdf_filename = save_annotated_pdf(
+                annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                     original_file_bytes, homework_id, student_id, mcq_results_single, match_percentage, status, student_level
                 )
             
@@ -1766,7 +1978,8 @@ async def homework_validate(
                 "rule_based_remark": f"{'Correct' if is_correct else 'Incorrect'}. Score: {match_percentage}% (Level: {student_level}, Credit per Q: {credit_per_q}%)",
                 "student_extracted_text": student_text,
                 "llm_used": False,
-                "annotated_pdf": annotated_pdf_filename,
+                "question_marks": make_question_marks(mcq_results_single),
+            "annotated_pdf": annotated_pdf_filename,
                 "debug": {"correct": correct, "chosen": chosen, "level": student_level, "credit_per_q": credit_per_q},
                 "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
             }
@@ -1775,7 +1988,7 @@ async def homework_validate(
     if gemini_client is None:
         # Save annotated PDF
         if is_pdf_submission and original_file_bytes:
-            annotated_pdf_filename = save_annotated_pdf(
+            annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                 original_file_bytes, homework_id, student_id, [], 0, "Needs Review", student_level
             )
         return {
@@ -1792,6 +2005,7 @@ async def homework_validate(
             "llm_used": False,
             "llm_error": parse_gemini_error(GEMINI_LAST_ERROR),
             "student_extracted_text": student_text,
+            "question_marks": make_question_marks([]),
             "annotated_pdf": annotated_pdf_filename,
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
@@ -1815,7 +2029,7 @@ async def homework_validate(
     if not response_text:
         # Save annotated PDF
         if is_pdf_submission and original_file_bytes:
-            annotated_pdf_filename = save_annotated_pdf(
+            annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                 original_file_bytes, homework_id, student_id, [], 0, "Needs Review", student_level
             )
         return {
@@ -1832,6 +2046,7 @@ async def homework_validate(
             "llm_used": False,
             "llm_error": parse_gemini_error(GEMINI_LAST_ERROR),
             "student_extracted_text": student_text,
+            "question_marks": make_question_marks([]),
             "annotated_pdf": annotated_pdf_filename,
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
@@ -1842,7 +2057,7 @@ async def homework_validate(
     except Exception as e:
         # Save annotated PDF
         if is_pdf_submission and original_file_bytes:
-            annotated_pdf_filename = save_annotated_pdf(
+            annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                 original_file_bytes, homework_id, student_id, [], 0, "Needs Review", student_level
             )
         return {
@@ -1859,6 +2074,7 @@ async def homework_validate(
             "llm_used": False,
             "llm_error": {"ok": False, "error_type": "GEMINI_BAD_JSON", "message": str(e), "raw": response_text[:800]},
             "student_extracted_text": student_text,
+            "question_marks": make_question_marks([]),
             "annotated_pdf": annotated_pdf_filename,
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
@@ -1872,7 +2088,7 @@ async def homework_validate(
     if not ai_reference_answer:
         # Save annotated PDF
         if is_pdf_submission and original_file_bytes:
-            annotated_pdf_filename = save_annotated_pdf(
+            annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                 original_file_bytes, homework_id, student_id, [], 0, "Needs Review", student_level
             )
         return {
@@ -1888,6 +2104,7 @@ async def homework_validate(
             "rule_based_remark": "AI returned empty reference answer.",
             "llm_used": True,
             "student_extracted_text": student_text,
+            "question_marks": make_question_marks([]),
             "annotated_pdf": annotated_pdf_filename,
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
@@ -1938,10 +2155,25 @@ async def homework_validate(
         else:
             rule_based_remark = "Homework does not match the expected answer enough. Please review the topic and resubmit with clearer, complete points."
 
-    # Save annotated PDF for narrative (with status but no MCQ marks)
+    # Save annotated PDF for narrative (with status-based circle marking)
+    # Add a placeholder to show it's a narrative question that was evaluated
     if is_pdf_submission and original_file_bytes:
-        annotated_pdf_filename = save_annotated_pdf(
-            original_file_bytes, homework_id, student_id, [], match_pct, status, student_level
+        # Determine correctness based on status:
+        # - Verified: correct (green checkmark)
+        # - Partial: partially correct (yellow circle)
+        # - Needs Review: incorrect (red circle)
+        if status == "Verified":
+            narrative_correct = True
+        elif status == "Partial":
+            narrative_correct = False  # Will show as yellow circle for partial
+        else:
+            narrative_correct = False  # Will show as red circle for needs review
+        
+        narrative_result = [
+            {'qid': 'Q1', 'correct': narrative_correct, 'chosen': f'Score: {match_pct}%', 'correct_answer': status}
+        ]
+        annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
+            original_file_bytes, homework_id, student_id, narrative_result, match_pct, status, student_level, "narrative"
         )
 
     return {
@@ -1963,7 +2195,8 @@ async def homework_validate(
         "key_points": key_points,
         "key_points_covered": covered,
         "key_points_missing": missing,
-        "annotated_pdf": annotated_pdf_filename,
+        "question_marks": make_question_marks([]),
+            "annotated_pdf": annotated_pdf_filename,
         "debug": {
             "similarity": sim,
             "coverage": coverage,
@@ -1973,5 +2206,3 @@ async def homework_validate(
         },
         "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
     }
-
-

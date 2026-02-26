@@ -14,6 +14,9 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY . /app
 
+# Set HF_SPACE environment variable for Hugging Face Spaces
+ENV HF_SPACE=moncey10-homework-validation-system.hf.space
+
 # Hugging Face Spaces expects 7860 by default
 EXPOSE 7860
 
