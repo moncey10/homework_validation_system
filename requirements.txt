@@ -5,6 +5,7 @@ pillow
 sqlalchemy
 scikit-learn
 requests
+<<<<<<< HEAD
 python-docx
 google-genai
 python-dotenv
@@ -15,3 +16,12 @@ google-cloud-vision
 easyocr
 pdf2image
 reportlab
+=======
+python-multipart
+openai
+google-generativeai
+python-docx
+pypdf
+pdf2image
+python-dotenv
+>>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e

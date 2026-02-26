@@ -18,6 +18,7 @@ answer_key.json
 __pycache__/
 *.pyc
 .env
+<<<<<<< HEAD
 myenv/
 venv/
 .venv/
@@ -28,3 +29,5 @@ __pycache__/
 *.db
 homework.db
 _local_backup/
+=======
+>>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
