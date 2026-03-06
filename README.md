@@ -1,11 +1,3 @@
-<<<<<<< HEAD
----
-title: Homework Validation System
-sdk: docker
-app_port: 7860
----
-
-
 ---
 title: Homework Validation System
 sdk: docker
@@ -23,7 +15,7 @@ A backend API that validates student homework by extracting text from teacher an
 - OCR support for images and scanned PDFs
 - Text extraction from PDF and DOCX
 - Similarity matching using TF-IDF + cosine similarity
-- Optional AI-generated remarks (OpenAI / Gemini)
+- Optional AI-generated remarks (Gemini)
 - FastAPI Swagger documentation
 
 ---
@@ -37,7 +29,7 @@ A backend API that validates student homework by extracting text from teacher an
 - pypdf / pdf2image
 - python-docx
 - scikit-learn
-- OpenAI / Gemini (optional)
+- Gemini 
 
 ---
 
@@ -94,4 +86,4 @@ http://localhost:8000/docs
   "ai_generated_remark": "Good attempt but missing key points.",
   "llm_used": true
 }
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
+
