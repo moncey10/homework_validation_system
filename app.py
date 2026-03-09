@@ -10,15 +10,11 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image, ImageOps, ImageFilter
 import pytesseract
-<<<<<<< HEAD
 import os
 
 # Serve static files from outputs directory
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
-=======
-
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -34,7 +30,6 @@ except Exception:
     PdfReader = None
 
 try:
-<<<<<<< HEAD
     from reportlab.pdfgen import canvas
     from reportlab.lib.pagesizes import letter
     from reportlab.lib import colors
@@ -45,8 +40,6 @@ except Exception as e:
     print(f"[WARN] reportlab import failed: {e}")
 
 try:
-=======
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
     from pdf2image import convert_from_bytes  # requires poppler
 except Exception:
     convert_from_bytes = None
@@ -62,7 +55,6 @@ except Exception as e:
     genai = None
     print(f"[WARN] google-genai import failed: {e}")
 
-<<<<<<< HEAD
 # ✅ Google Cloud Vision SDK (for better handwritten OCR)
 try:
     from google.cloud import vision
@@ -119,13 +111,6 @@ def debug_env():
         "num_keys": len(GOOGLE_API_KEYS),
         "has_openai_key": bool(os.getenv("OPENAI_API_KEY")),
     }
-=======
-
-# =========================================================
-# ✅ FASTAPI APP INSTANCE
-# =========================================================
-app = FastAPI()
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -134,33 +119,20 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-<<<<<<< HEAD
 
 
-=======
-# =========================================================
-# ✅ TESSERACT PATH
-# =========================================================
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
 if os.name == "nt":
     pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 else:
     pytesseract.pytesseract.tesseract_cmd = "/usr/bin/tesseract"
 
 
-<<<<<<< HEAD
 
-=======
-# =========================================================
-# ✅ ERP CONFIG
-# =========================================================
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
 ERP_BASE = os.getenv("ERP_BASE", "https://erp.triz.co.in/lms_data")
 STORAGE_BASE = os.getenv("STORAGE_BASE", "https://erp.triz.co.in/storage/student/")
 ERP_TOKEN = os.getenv("ERP_TOKEN", "")
 
 
-<<<<<<< HEAD
 def get_public_base_url() -> str:
     """
     Returns the public base URL of this server.
@@ -279,58 +251,27 @@ def _init_gemini_client(key_index: int = 0) -> None:
         return
     
     api_key = GOOGLE_API_KEYS[key_index]
-=======
-# =========================================================
-# ✅ GEMINI CONFIG
-# =========================================================
-GOOGLE_API_KEY = (os.getenv("GOOGLE_API_KEY") or "").strip()
-GEMINI_MODEL = (os.getenv("GEMINI_MODEL", "models/gemini-2.0-flash") or "").strip()
-if GEMINI_MODEL and not GEMINI_MODEL.startswith("models/"):
-    GEMINI_MODEL = "models/" + GEMINI_MODEL
-
-gemini_client = None
-GEMINI_LAST_ERROR = ""
-
-
-def _init_gemini_client() -> None:
-    global gemini_client, GEMINI_LAST_ERROR
-
-    if gemini_client is not None:
-        return
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
 
     if not genai:
         GEMINI_LAST_ERROR = "google-genai not installed / import failed"
         gemini_client = None
         return
 
-<<<<<<< HEAD
     if not api_key:
         GEMINI_LAST_ERROR = f"GOOGLE_API_KEY_{key_index + 1} not set"
-=======
-    if not GOOGLE_API_KEY:
-        GEMINI_LAST_ERROR = "GOOGLE_API_KEY not set"
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
         gemini_client = None
         return
 
     try:
-<<<<<<< HEAD
         gemini_client = genai.Client(api_key=api_key)
         GEMINI_LAST_ERROR = ""
         print(f"[INFO] Gemini client initialized with key #{key_index + 1}")
-=======
-        gemini_client = genai.Client(api_key=GOOGLE_API_KEY)
-        GEMINI_LAST_ERROR = ""
-        print("[INFO] Gemini client initialized")
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
     except Exception as e:
         gemini_client = None
         GEMINI_LAST_ERROR = str(e)
         print(f"[WARN] Gemini init failed: {GEMINI_LAST_ERROR}")
 
 
-<<<<<<< HEAD
 def _is_rate_limit_error(error_msg: str) -> bool:
     """Check if the error is a rate limit error (429) or service unavailable (503)."""
     if not error_msg:
@@ -373,9 +314,6 @@ def _rotate_to_next_key() -> bool:
 
 
 _init_gemini_client(0)
-=======
-_init_gemini_client()
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
 
 
 def parse_gemini_error(error_msg: str) -> dict:
@@ -391,7 +329,6 @@ def parse_gemini_error(error_msg: str) -> dict:
     return {"ok": False, "error_type": "GEMINI_ERROR", "message": msg}
 
 
-<<<<<<< HEAD
 
 def extract_qid_from_prompt(prompt: str, erp_row: dict = None) -> str:
     """
@@ -438,32 +375,22 @@ def extract_qid_from_prompt(prompt: str, erp_row: dict = None) -> str:
     return "Q1"
 
 
-=======
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
 def generate_gemini_response(
     prompt: str,
     system_prompt: str = "",
     max_tokens: int = 650,
     temperature: float = 0.3,
 ) -> str:
-<<<<<<< HEAD
     global GEMINI_LAST_ERROR, gemini_client, rate_limited_keys
-=======
-    global GEMINI_LAST_ERROR
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
 
     if gemini_client is None:
         if not GEMINI_LAST_ERROR:
             GEMINI_LAST_ERROR = "Gemini client not initialized"
-<<<<<<< HEAD
         # Try to reinitialize if we have keys available
         if GOOGLE_API_KEYS and current_key_index not in rate_limited_keys:
             _init_gemini_client(current_key_index)
         if gemini_client is None:
             return ""
-=======
-        return ""
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
 
     try:
         contents = []
@@ -481,7 +408,6 @@ def generate_gemini_response(
             GEMINI_LAST_ERROR = ""
         return text
     except Exception as e:
-<<<<<<< HEAD
         error_msg = str(e)
         print(f"[ERROR] Gemini call failed: {error_msg}")
         
@@ -493,10 +419,6 @@ def generate_gemini_response(
                 return generate_gemini_response(prompt, system_prompt, max_tokens, temperature)
         
         GEMINI_LAST_ERROR = error_msg
-=======
-        GEMINI_LAST_ERROR = str(e)
-        print(f"[ERROR] Gemini call failed: {GEMINI_LAST_ERROR}")
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
         return ""
 
 import time
@@ -530,13 +452,7 @@ def cheap_overlap_score(student_text: str, prompt: str) -> int:
     return int(round(min(0.6, overlap) * 100))  # cap at 60
 
 
-<<<<<<< HEAD
 
-=======
-# =========================================================
-# ✅ SMALL UTILS
-# =========================================================
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", (s or "").strip().lower())
 
@@ -571,7 +487,6 @@ def level_policy(student_level: str) -> dict:
     return {"w_sim": 0.6, "w_cov": 0.4, "verified": 75, "partial": 55, "kp_thr": 0.20}
 
 
-<<<<<<< HEAD
 def mcq_partial_credit(student_level: str) -> dict:
     """
     Returns partial credit percentage for MCQ questions based on student level.
@@ -592,8 +507,6 @@ def mcq_partial_credit(student_level: str) -> dict:
     return {"credit_per_question": 75, "passing_threshold": 75}
 
 
-=======
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
 def keypoint_coverage(student_text: str, key_points: List[str], kp_threshold: float) -> Tuple[List[str], List[str], float]:
     covered, missing = [], []
     for kp in key_points:
@@ -611,15 +524,8 @@ def keypoint_coverage(student_text: str, key_points: List[str], kp_threshold: fl
     return covered, missing, coverage
 
 
-<<<<<<< HEAD
 
 def infer_question_type_from_prompt(prompt: str, student_text: str = "") -> str:
-=======
-# =========================================================
-# ✅ QUESTION TYPE INFERENCE + MCQ PARSING
-# =========================================================
-def infer_question_type_from_prompt(prompt: str) -> str:
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
     p = _norm(prompt)
 
     # Explicit markers - check for (mcq) first since it's common in parentheses
@@ -628,7 +534,6 @@ def infer_question_type_from_prompt(prompt: str) -> str:
     if re.search(r"\btype\s*:\s*narrative\b", p) or re.search(r"\bquestion_type\s*:\s*narrative\b", p):
         return "narrative"
 
-<<<<<<< HEAD
     # Heuristic: options A/B/C/D exist in prompt -> likely MCQ
     if re.search(r"\b(a|b|c|d)\s*[\)\.]\s+", p) or "option a" in p or "option b" in p:
         return "mcq"
@@ -646,11 +551,6 @@ def infer_question_type_from_prompt(prompt: str) -> str:
         # If answer starts with A. or B. etc.
         if re.search(r"^[a-d]\.\s+", s.strip()):
             return "mcq"
-=======
-    # Heuristic: options A/B/C/D exist -> likely MCQ
-    if re.search(r"\b(a|b|c|d)\s*[\)\.]\s+", p) or "option a" in p or "option b" in p:
-        return "mcq"
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
 
     return "narrative"
 
@@ -715,7 +615,6 @@ def parse_questions_from_prompt(prompt: str) -> List[Dict[str, Any]]:
                 
                 # Check for correct answer (for MCQ)
                 if current_type == 'mcq':
-<<<<<<< HEAD
                     # First check: is this line "Correct Answer(s):" with nothing after it?
                     # If so, we need to look for the answer on the next line
                     if re.search(r'^correct\s*answer\s*\(?s\)?\s*[:\.]?\s*$', line, re.IGNORECASE):
@@ -748,12 +647,6 @@ def parse_questions_from_prompt(prompt: str) -> List[Dict[str, Any]]:
                         else:
                             # Try to extract first letter
                             current_correct = correct_text[0].upper() if correct_text else None
-=======
-                    # Look for "Correct Answer(s):" or "Correct:" or "Answer:"
-                    correct_match = re.search(r'(?:Correct\s*(?:Answer)?|Answer)[:.]\s*(?:[A-D]\.?\s*)?(.+)', line, re.IGNORECASE)
-                    if correct_match and not current_correct:
-                        current_correct = correct_match.group(1).strip()
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
     
     # Don't forget the last question
     if current_q is not None:
@@ -767,11 +660,7 @@ def parse_questions_from_prompt(prompt: str) -> List[Dict[str, Any]]:
     # If no questions parsed, fall back to old behavior
     if not questions:
         qtype = infer_question_type_from_prompt(prompt)
-<<<<<<< HEAD
         return [{'qid': extract_qid_from_prompt(prompt), 'type': qtype, 'question': prompt, 'correct_answer': None}]
-=======
-        return [{'qid': 'Q1', 'type': qtype, 'question': prompt, 'correct_answer': None}]
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
     
     return questions
 
@@ -803,7 +692,6 @@ def extract_mcq_choice(text: str) -> str:
     return ""
 
 
-<<<<<<< HEAD
 def extract_mcq_answers_with_qid(text: str) -> Dict[str, str]:
     """
     Extract MCQ answers WITH question numbers from student text.
@@ -859,8 +747,6 @@ def extract_mcq_answers_with_qid(text: str) -> Dict[str, str]:
     return results
 
 
-=======
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
 def extract_correct_mcq_from_prompt(prompt: str) -> str:
     """
     This is IMPORTANT:
@@ -868,7 +754,6 @@ def extract_correct_mcq_from_prompt(prompt: str) -> str:
       - Correct: B
       - Answer: C
       - correct_option: D
-<<<<<<< HEAD
       - Correct Answer(s): A. Devdatta
     or JSON: {"correct_option":"B"}
     
@@ -877,9 +762,6 @@ def extract_correct_mcq_from_prompt(prompt: str) -> str:
       - "Correct Answer(s): A. Devdatta"
       - "Correct: B"
       - "Answer: C"
-=======
-    or JSON: {"correct_option":"B"}
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
     """
     p = (prompt or "").strip()
     if not p:
@@ -896,7 +778,6 @@ def extract_correct_mcq_from_prompt(prompt: str) -> str:
         except Exception:
             pass
 
-<<<<<<< HEAD
     # Text prompt support - new format: "Correct Answer(s): A. Devdatta" or "Correct Answer: B"
     t = _norm(p)
     
@@ -919,10 +800,6 @@ def extract_correct_mcq_from_prompt(prompt: str) -> str:
         return m1c.group(1)
     
     # Pattern 2: "Correct: A" or "Answer: B" (original pattern)
-=======
-    # Text prompt support
-    t = _norm(p)
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
     m = re.search(r"\b(correct|answer|ans)\s*[:\-]?\s*\(?\s*([a-d])\s*\)?\b", t)
     if m:
         return m.group(2)
@@ -930,13 +807,7 @@ def extract_correct_mcq_from_prompt(prompt: str) -> str:
     return ""
 
 
-<<<<<<< HEAD
 
-=======
-# =========================================================
-# ✅ ERP HELPERS
-# =========================================================
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
 def _erp_get(params: dict) -> list:
     headers = {}
     if ERP_TOKEN:
@@ -968,7 +839,6 @@ def fetch_student_level_from_erp(row: Dict[str, Any]) -> str:
     return "Medium"
 
 
-<<<<<<< HEAD
 
 def _preprocess_for_ocr(img: Image.Image) -> Image.Image:
     """
@@ -1037,25 +907,51 @@ def _extract_text_google_vision(image_bytes: bytes) -> str:
         return ""
 
 
-=======
-# =========================================================
-# ✅ OCR + TEXT EXTRACTION
-# =========================================================
-def _preprocess_for_ocr(img: Image.Image) -> Image.Image:
-    img = img.convert("L")
-    img = ImageOps.autocontrast(img)
+def _extract_text_gemini_vision(image_bytes: bytes, mime_type: str = "image/jpeg") -> str:
+    """
+    Use Gemini multimodal vision to extract handwritten or printed text from an image.
+    This is significantly better than Tesseract for handwritten notes.
+    """
+    if not gemini_client:
+        return ""
 
-    w, h = img.size
-    if max(w, h) < 1600:
-        scale = 1600 / max(w, h)
-        img = img.resize((int(w * scale), int(h * scale)))
+    import base64
+    try:
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
 
-    img = img.filter(ImageFilter.SHARPEN)
-    img = img.point(lambda p: 255 if p > 170 else 0)
-    return img
+        resp = gemini_client.models.generate_content(
+            model=GEMINI_MODEL,
+            contents=[
+                {
+                    "parts": [
+                        {
+                            "inline_data": {
+                                "mime_type": mime_type,
+                                "data": image_b64,
+                            }
+                        },
+                        {
+                            "text": (
+                                "Extract ALL the text visible in this image exactly as written. "
+                                "This may be handwritten notes, a printed document, or a scanned page. "
+                                "Preserve all numbering, structure, headings, and content faithfully. "
+                                "If it is a student answer sheet, extract every word the student has written. "
+                                "Output only the extracted text — no commentary, no explanation."
+                            )
+                        },
+                    ]
+                }
+            ],
+            config={"temperature": 0.1, "max_output_tokens": 2000},
+        )
+        result = (getattr(resp, "text", "") or "").strip()
+        print(f"[INFO] Gemini vision extracted {len(result)} chars from image")
+        return result
+    except Exception as e:
+        print(f"[WARN] Gemini vision extraction failed: {e}")
+        return ""
 
 
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
 def extract_text_from_image(image_bytes: bytes, filename: str = "unknown") -> str:
     if not image_bytes or len(image_bytes) < 50:
         raise HTTPException(status_code=400, detail=f"Invalid file: '{filename}' - empty/too small")
@@ -1072,16 +968,29 @@ def extract_text_from_image(image_bytes: bytes, filename: str = "unknown") -> st
         head = image_bytes[:12]
         raise HTTPException(status_code=400, detail=f"Invalid image format: '{filename}' (header={head})")
 
-<<<<<<< HEAD
-    # First try Google Cloud Vision (better for handwriting)
+    # Detect MIME type for Gemini
+    mime_type = "image/jpeg"
+    if image_bytes.startswith(b"\x89PNG"):
+        mime_type = "image/png"
+    elif image_bytes.startswith(b"GIF"):
+        mime_type = "image/gif"
+    elif image_bytes.startswith(b"BM"):
+        mime_type = "image/bmp"
+
+    # 1. Try Gemini Vision first — best for handwriting and printed text
+    if gemini_client:
+        gv_text = _extract_text_gemini_vision(image_bytes, mime_type)
+        if gv_text and len(gv_text.strip()) > 10:
+            return _clean_extracted_text(gv_text)
+        print("[WARN] Gemini vision returned no text, falling back to Google Cloud Vision / Tesseract")
+
+    # 2. Fallback: Google Cloud Vision
     if vision_client:
         gv_text = _extract_text_google_vision(image_bytes)
         if gv_text and len(gv_text.strip()) > 10:
             return _clean_extracted_text(gv_text)
-    
-    # Fallback to Tesseract with improved preprocessing
-=======
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
+
+    # 3. Last resort: Tesseract with improved preprocessing
     try:
         img = Image.open(io.BytesIO(image_bytes))
     except Exception as e:
@@ -1089,17 +998,14 @@ def extract_text_from_image(image_bytes: bytes, filename: str = "unknown") -> st
 
     img = _preprocess_for_ocr(img)
 
-<<<<<<< HEAD
     # Try multiple OCR configurations for better handwritten recognition
     ocr_configs = [
         "--oem 3 --psm 6",  # Default
         "--oem 3 --psm 4",  # Treat as single column
         "--oem 1 --psm 3",  # Fully automatic
     ]
-    
+
     best_text = ""
-    best_confidence = 0
-    
     for config in ocr_configs:
         try:
             text = pytesseract.image_to_string(img, lang="eng", config=config)
@@ -1107,9 +1013,9 @@ def extract_text_from_image(image_bytes: bytes, filename: str = "unknown") -> st
                 best_text = text
         except Exception:
             continue
-    
+
     if not best_text:
-        # Fallback to default if all fail
+        # Final fallback
         try:
             best_text = pytesseract.image_to_string(img, lang="eng", config="--oem 3 --psm 6")
         except pytesseract.TesseractNotFoundError:
@@ -1118,16 +1024,6 @@ def extract_text_from_image(image_bytes: bytes, filename: str = "unknown") -> st
             raise HTTPException(status_code=500, detail=f"OCR failed: {e}")
 
     text = (best_text or "").strip()
-=======
-    try:
-        text = pytesseract.image_to_string(img, lang="eng", config="--oem 3 --psm 6")
-    except pytesseract.TesseractNotFoundError:
-        raise HTTPException(status_code=500, detail="Tesseract OCR not found. Install it / fix path.")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"OCR failed: {e}")
-
-    text = (text or "").strip()
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
     text = re.sub(r"[ \t]+", " ", text)
     return text
 
@@ -1179,24 +1075,32 @@ def extract_text_from_pdf(pdf_bytes: bytes, filename: str = "unknown.pdf") -> Di
             return {"text": extracted, "used_ocr": False, "needs_ocr": True}
         try:
             used_ocr = True
-<<<<<<< HEAD
             # Higher DPI for better handwritten OCR
             pages = convert_from_bytes(pdf_bytes, dpi=300)
             page_texts = []
             for img in pages:
-                # Use the improved preprocessing
-                img = _preprocess_for_ocr(img)
-                
-                # Try multiple OCR configs
+                import io as _io
+                # Try Gemini vision first (best for handwriting)
+                if gemini_client:
+                    buf = _io.BytesIO()
+                    img.save(buf, format="PNG")
+                    img_bytes = buf.getvalue()
+                    t = _extract_text_gemini_vision(img_bytes, "image/png")
+                    if t and len(t.strip()) > 20:
+                        page_texts.append(t)
+                        continue
+
+                # Fallback: Tesseract with preprocessing
+                img_proc = _preprocess_for_ocr(img)
                 for config in ["--oem 3 --psm 6", "--oem 3 --psm 4", "--oem 1 --psm 3"]:
                     try:
-                        t = pytesseract.image_to_string(img, lang="eng", config=config) or ""
+                        t = pytesseract.image_to_string(img_proc, lang="eng", config=config) or ""
                         if t.strip() and len(t.strip()) > 20:
                             page_texts.append(t)
                             break
-                    except:
+                    except Exception:
                         continue
-            
+
             if page_texts:
                 extracted = _clean_extracted_text("\n\n".join(page_texts))
             else:
@@ -1205,23 +1109,12 @@ def extract_text_from_pdf(pdf_bytes: bytes, filename: str = "unknown.pdf") -> Di
                 if img:
                     img = _preprocess_for_ocr(img)
                     extracted = pytesseract.image_to_string(img, lang="eng", config="--oem 3 --psm 6") or ""
-=======
-            pages = convert_from_bytes(pdf_bytes, dpi=250)
-            page_texts = []
-            for img in pages:
-                img = _preprocess_for_ocr(img)
-                t = pytesseract.image_to_string(img, lang="eng", config="--oem 3 --psm 6") or ""
-                if t.strip():
-                    page_texts.append(t)
-            extracted = _clean_extracted_text("\n\n".join(page_texts))
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
         except Exception as e:
             return {"text": extracted, "used_ocr": used_ocr, "needs_ocr": True, "ocr_error": str(e)}
 
     return {"text": extracted, "used_ocr": used_ocr, "needs_ocr": False}
 
 
-<<<<<<< HEAD
 def get_question_positions_from_pdf(pdf_bytes: bytes) -> Dict[int, List[Dict]]:
     """
     Detect question number positions in a PDF.
@@ -1494,8 +1387,6 @@ def create_annotated_pdf(
         print(f"[ERROR] Failed to create annotated PDF: {e}")
         return original_pdf_bytes
 
-=======
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
 async def extract_text_from_upload(file: UploadFile) -> Dict[str, Any]:
     filename = getattr(file, "filename", "") or "upload"
     content_type = (getattr(file, "content_type", "") or "").lower()
@@ -1545,13 +1436,7 @@ async def extract_text_from_upload(file: UploadFile) -> Dict[str, Any]:
 
 
 
-<<<<<<< HEAD
 
-=======
-# =========================================================
-# ✅ ROUTES
-# =========================================================
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -1560,7 +1445,6 @@ def health():
 @app.get("/health/llm")
 def health_llm():
     return {
-<<<<<<< HEAD
         "ok": bool(gemini_client) and bool(GOOGLE_API_KEYS),
         "gemini": {
             "sdk_import_ok": genai is not None,
@@ -1568,12 +1452,6 @@ def health_llm():
             "num_keys_configured": len(GOOGLE_API_KEYS),
             "current_key_index": current_key_index + 1 if GOOGLE_API_KEYS else 0,
             "rate_limited_keys": list(rate_limited_keys),
-=======
-        "ok": bool(gemini_client) and bool(GOOGLE_API_KEY),
-        "gemini": {
-            "sdk_import_ok": genai is not None,
-            "configured": bool(GOOGLE_API_KEY),
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
             "client_ready": gemini_client is not None,
             "model": GEMINI_MODEL,
             "last_error": GEMINI_LAST_ERROR if GEMINI_LAST_ERROR else None,
@@ -1581,7 +1459,6 @@ def health_llm():
     }
 
 
-<<<<<<< HEAD
 @app.get("/homework/annotated-url/{homework_id}/{student_id}")
 async def get_annotated_pdf_url(
     homework_id: int,
@@ -1994,13 +1871,10 @@ def build_per_question_results(
     return ai_evaluate_per_question(prompt, student_text, student_level)
 
 
-=======
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
 @app.post("/homework/validate")
 async def homework_validate(
     student_id: int = Form(...),
     homework_id: int = Form(...),
-<<<<<<< HEAD
     student_file: UploadFile = File(...),
 ):
     # 0) Fetch ERP record -> get all fields automatically
@@ -2030,32 +1904,118 @@ async def homework_validate(
     if final_question_type not in ("mcq", "narrative", "mixed"):
         final_question_type = infer_question_type_from_prompt(prompt, student_text)
 
-=======
-    sub_institute_id: int = Form(...),
-    syear: str = Form(...),
-    prompt: str = Form(...),
-    student_file: UploadFile = File(...),
-):
-    # 0) Fetch ERP record -> get student_level automatically
-    erp_row = fetch_student_record(homework_id, student_id)
-    student_level = fetch_student_level_from_erp(erp_row)
-    policy = level_policy(student_level)
-
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
     # 1) Infer question_type from prompt automatically (NO EXTRA FIELD)
     # Try to parse mixed questions first
     parsed_questions = parse_questions_from_prompt(prompt)
     has_mcq = any(q.get('type') == 'mcq' for q in parsed_questions)
     has_narrative = any(q.get('type') == 'narrative' for q in parsed_questions)
     
-<<<<<<< HEAD
-    # Check if it's a PDF
-    is_pdf_submission = student_info.get("kind") == "pdf"
-    
+    # Detect submission kind
+    submission_kind = student_info.get("kind", "")  # "pdf", "image", "docx", etc.
+    is_pdf_submission   = submission_kind == "pdf"
+    is_image_submission = submission_kind == "image" or submission_kind == "unknown_as_image"
+    is_docx_submission  = submission_kind == "docx"
+    can_annotate        = is_pdf_submission or is_image_submission or is_docx_submission
+
+    # ── Converters: image/docx → PDF bytes so create_annotated_pdf can process them ──
+    def _image_bytes_to_pdf(img_bytes: bytes) -> bytes:
+        """Wrap a raw image inside a single-page PDF using reportlab."""
+        try:
+            from reportlab.pdfgen import canvas as rl_canvas
+            from reportlab.lib.utils import ImageReader
+            from PIL import Image as PILImage
+            import io as _io
+            img = PILImage.open(_io.BytesIO(img_bytes))
+            iw, ih = img.size
+            buf = _io.BytesIO()
+            c = rl_canvas.Canvas(buf, pagesize=(iw, ih))
+            c.drawImage(ImageReader(img), 0, 0, iw, ih)
+            c.save()
+            buf.seek(0)
+            return buf.read()
+        except Exception as e:
+            print(f"[WARN] _image_bytes_to_pdf failed: {e}")
+            return b""
+
+    def _docx_bytes_to_pdf(docx_bytes: bytes) -> bytes:
+        """
+        Convert DOCX → PDF.
+        Tries LibreOffice (soffice) first — available in most Linux envs.
+        Falls back to building a simple reportlab PDF with the extracted text.
+        """
+        import subprocess, tempfile, shutil, os as _os, io as _io
+        # Try LibreOffice
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                docx_path = _os.path.join(tmpdir, "input.docx")
+                with open(docx_path, "wb") as f:
+                    f.write(docx_bytes)
+                result = subprocess.run(
+                    ["soffice", "--headless", "--convert-to", "pdf", "--outdir", tmpdir, docx_path],
+                    timeout=30, capture_output=True
+                )
+                pdf_path = docx_path.replace(".docx", ".pdf")
+                if _os.path.exists(pdf_path):
+                    with open(pdf_path, "rb") as f:
+                        return f.read()
+        except Exception as e:
+            print(f"[WARN] LibreOffice docx→pdf failed: {e}")
+
+        # Fallback: extract text and build a simple PDF with reportlab
+        try:
+            from reportlab.pdfgen import canvas as rl_canvas
+            from reportlab.lib.pagesizes import A4
+            from docx import Document as DocxDoc
+            doc = DocxDoc(_io.BytesIO(docx_bytes))
+            text_lines = [p.text for p in doc.paragraphs if p.text.strip()]
+            buf = _io.BytesIO()
+            page_w, page_h = A4
+            c = rl_canvas.Canvas(buf, pagesize=A4)
+            c.setFont("Helvetica", 11)
+            y = page_h - 50
+            for line in text_lines:
+                # Word-wrap long lines
+                while len(line) > 90:
+                    c.drawString(40, y, line[:90])
+                    line = line[90:]
+                    y -= 16
+                    if y < 50:
+                        c.showPage()
+                        c.setFont("Helvetica", 11)
+                        y = page_h - 50
+                c.drawString(40, y, line)
+                y -= 16
+                if y < 50:
+                    c.showPage()
+                    c.setFont("Helvetica", 11)
+                    y = page_h - 50
+            c.save()
+            buf.seek(0)
+            return buf.read()
+        except Exception as e:
+            print(f"[WARN] Fallback docx→pdf failed: {e}")
+            return b""
+
+    def _get_pdf_bytes_for_annotation() -> bytes:
+        """
+        Returns PDF bytes ready for annotation, converting from image/docx if needed.
+        """
+        if is_pdf_submission:
+            return original_file_bytes
+        if is_image_submission:
+            pdf = _image_bytes_to_pdf(original_file_bytes)
+            if pdf:
+                return pdf
+        if is_docx_submission:
+            pdf = _docx_bytes_to_pdf(original_file_bytes)
+            if pdf:
+                return pdf
+        return b""
+
     # Initialize annotated PDF filename
     annotated_pdf_filename = None
     annotated_pdf_url = None
-    
+
     # Function to save annotated PDF — returns (filename, public_url)
     def save_annotated_pdf(pdf_bytes, hw_id, stud_id, results, score, stat, lvl, qtype="mcq"):
         if not pdf_bytes or len(pdf_bytes) < 100:
@@ -2066,16 +2026,22 @@ async def homework_validate(
             ts = int(time.time())
             filename = f"marked_{hw_id}_{stud_id}_{ts}.pdf"
             filepath = os.path.join(outputs_dir, filename)
-            
+
+            # Convert image/docx → PDF if needed, then annotate
+            annotation_input = _get_pdf_bytes_for_annotation()
+            if not annotation_input:
+                print(f"[WARN] Could not get PDF bytes for annotation (kind={submission_kind})")
+                return None, None
+
             annotated = create_annotated_pdf(
-                original_pdf_bytes=pdf_bytes,
+                original_pdf_bytes=annotation_input,
                 mcq_results=results,
                 match_percentage=score,
                 status=stat,
                 student_level=lvl,
                 question_type=qtype
             )
-            
+
             with open(filepath, "wb") as f:
                 f.write(annotated)
             return filename, build_pdf_url(filename)
@@ -2086,36 +2052,17 @@ async def homework_validate(
     MIN_WORDS = 3 if final_question_type == "mcq" else 8
     if len(student_text.split()) < MIN_WORDS:
         # Save annotated PDF even for unreadable (with status shown)
-        if is_pdf_submission and original_file_bytes:
+        if can_annotate and original_file_bytes:
             # Show circle mark for unreadable
             unreadable_result = [{'qid': extract_qid_from_prompt(prompt, erp_row), 'correct': None, 'chosen': 'Unreadable', 'correct_answer': 'N/A'}]
             annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                 original_file_bytes, homework_id, student_id, unreadable_result, 0, "Unreadable", student_level
             )
-=======
-    # Determine overall question type for backwards compatibility
-    if has_mcq and has_narrative:
-        question_type = "mixed"
-    elif has_mcq:
-        question_type = "mcq"
-    elif has_narrative:
-        question_type = "narrative"
-    else:
-        question_type = infer_question_type_from_prompt(prompt)
-
-    # 2) Extract student text
-    student_info = await extract_text_from_upload(student_file)
-    student_text = (student_info.get("text") or "").strip()
-
-    MIN_WORDS = 3 if question_type == "mcq" else 8
-    if len(student_text.split()) < MIN_WORDS:
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
         return {
             "student_id": student_id,
             "homework_id": homework_id,
             "sub_institute_id": sub_institute_id,
             "syear": syear,
-<<<<<<< HEAD
             "question_type": final_question_type,
             "student_level": student_level,
             "status": "Unreadable",
@@ -2126,36 +2073,22 @@ async def homework_validate(
             "llm_used": False,
             "question_marks": make_question_marks([]),
             "annotated_pdf": annotated_pdf_filename,
-=======
-            "question_type": question_type,
-            "student_level": student_level,
-            "status": "Unreadable",
-            "match_percentage": 0,
-            "ai_generated_remark": None,
-            "rule_based_remark": "Answer text could not be read clearly. Please upload a clearer file.",
-            "student_extracted_text": student_text,
-            "llm_used": False,
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
     if student_info.get("needs_ocr") and not student_text:
-<<<<<<< HEAD
         # Save annotated PDF even for unreadable (with status shown)
-        if is_pdf_submission and original_file_bytes:
+        if can_annotate and original_file_bytes:
             # Show circle mark for scanned PDF that needs OCR
             ocr_result = [{'qid': extract_qid_from_prompt(prompt, erp_row), 'correct': None, 'chosen': 'Needs OCR', 'correct_answer': 'N/A'}]
             annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                 original_file_bytes, homework_id, student_id, ocr_result, 0, "Unreadable", student_level
             )
-=======
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
         return {
             "student_id": student_id,
             "homework_id": homework_id,
             "sub_institute_id": sub_institute_id,
             "syear": syear,
-<<<<<<< HEAD
             "question_type": final_question_type,
             "student_level": student_level,
             "status": "Unreadable",
@@ -2171,28 +2104,10 @@ async def homework_validate(
 
     
     if final_question_type == "mixed":
-=======
-            "question_type": question_type,
-            "student_level": student_level,
-            "status": "Unreadable",
-            "match_percentage": 0,
-            "ai_generated_remark": None,
-            "rule_based_remark": "This PDF looks scanned. OCR is required (install pdf2image + poppler) or upload a clearer file.",
-            "student_extracted_text": student_text,
-            "llm_used": False,
-            "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
-        }
-
-    # =========================================================
-    # ✅ MIXED QUESTION TYPES CHECK (MCQ + Narrative)
-    # =========================================================
-    if question_type == "mixed":
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
         # Process each question type separately and combine results
         mcq_results = []
         narrative_results = []
         
-<<<<<<< HEAD
         # Extract ALL MCQ answers from student text with question numbers
         student_answers_by_qid = extract_mcq_answers_with_qid(student_text)
         
@@ -2209,21 +2124,11 @@ async def homework_validate(
                 if not chosen:
                     chosen = extract_mcq_choice(student_text)
                 
-=======
-        # Extract MCQ answers from student text for each MCQ question
-        for q in parsed_questions:
-            if q.get('type') == 'mcq':
-                # Try to find answer for this specific question in student's text
-                # Use the question text to help locate the answer
-                q_text = q.get('question', '')
-                chosen = extract_mcq_choice(student_text)
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
                 correct = q.get('correct_answer') or extract_correct_mcq_from_prompt(q.get('question', ''))
                 
                 if correct and chosen:
                     is_correct = (chosen.lower().strip() == correct.lower().strip())
                     mcq_results.append({
-<<<<<<< HEAD
                         'qid': qid,
                         'correct': is_correct,
                         'chosen': chosen,
@@ -2238,12 +2143,6 @@ async def homework_validate(
                         'chosen': '',
                         'correct_answer': correct,
                         'unattempted': True
-=======
-                        'qid': q.get('qid'),
-                        'correct': is_correct,
-                        'chosen': chosen,
-                        'correct_answer': correct
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
                     })
         
         # For narrative questions, use AI to generate reference
@@ -2300,7 +2199,6 @@ async def homework_validate(
                 except Exception as e:
                     narrative_results = {'error': str(e)}
         
-<<<<<<< HEAD
         # Calculate combined score with level-based partial credit for MCQ
         total_mcq = len(mcq_results)
         correct_mcq = sum(1 for r in mcq_results if r.get('correct'))
@@ -2312,12 +2210,6 @@ async def homework_validate(
         
         # Calculate MCQ score based on level (not just binary correct/incorrect)
         mcq_score = (correct_mcq * credit_per_q) / max(1, total_mcq)
-=======
-        # Calculate combined score
-        total_mcq = len(mcq_results)
-        correct_mcq = sum(1 for r in mcq_results if r.get('correct'))
-        mcq_score = (correct_mcq / total_mcq * 100) if total_mcq > 0 else 0
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
         
         narrative_score = narrative_results.get('match_percentage', 0) if narrative_results else 0
         
@@ -2339,15 +2231,12 @@ async def homework_validate(
         else:
             status = "Needs Review"
         
-<<<<<<< HEAD
         # Save annotated PDF
-        if is_pdf_submission and original_file_bytes and mcq_results:
+        if can_annotate and original_file_bytes and mcq_results:
             annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                 original_file_bytes, homework_id, student_id, mcq_results, final_score, status, student_level
             )
         
-=======
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
         return {
             "student_id": student_id,
             "homework_id": homework_id,
@@ -2357,18 +2246,12 @@ async def homework_validate(
             "student_level": student_level,
             "status": status,
             "match_percentage": final_score,
-<<<<<<< HEAD
             "submission_remarks": None,
             "rule_based_remark": f"MCQ: {correct_mcq}/{total_mcq} correct. Narrative score: {narrative_score}%. (Level: {student_level}, Credit per Q: {credit_per_q}%)",
-=======
-            "ai_generated_remark": None,
-            "rule_based_remark": f"MCQ: {correct_mcq}/{total_mcq} correct. Narrative score: {narrative_score}%.",
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
             "llm_used": bool(narrative_results and 'error' not in narrative_results),
             "student_extracted_text": student_text,
             "mcq_results": mcq_results,
             "narrative_results": narrative_results,
-<<<<<<< HEAD
             "question_marks": make_question_marks(mcq_results),
             "annotated_pdf": annotated_pdf_filename,
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
@@ -2466,7 +2349,7 @@ async def homework_validate(
                 status = "Verified" if match_percentage >= passing_threshold else "Needs Review"
                 
                 # Save annotated PDF
-                if is_pdf_submission and original_file_bytes:
+                if can_annotate and original_file_bytes:
                     annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                         original_file_bytes, homework_id, student_id, mcq_results, match_percentage, status, student_level
                     )
@@ -2492,7 +2375,7 @@ async def homework_validate(
             else:
                 # No correct answers in prompt - return needs review with extracted answers
                 # Save annotated PDF with circle mark
-                if is_pdf_submission and original_file_bytes:
+                if can_annotate and original_file_bytes:
                     no_answer_result = [{'qid': extract_qid_from_prompt(prompt, erp_row), 'correct': None, 'chosen': 'No Answer Key', 'correct_answer': 'N/A'}]
                     annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                         original_file_bytes, homework_id, student_id, no_answer_result, 0, "Needs Review", student_level
@@ -2520,19 +2403,11 @@ async def homework_validate(
             pass  # Will continue to narrative handling
         elif not correct:
             # Save annotated PDF with circle mark
-            if is_pdf_submission and original_file_bytes:
+            if can_annotate and original_file_bytes:
                 no_correct_result = [{'qid': extract_qid_from_prompt(prompt, erp_row), 'correct': None, 'chosen': 'Not Found', 'correct_answer': 'N/A'}]
                 annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                     original_file_bytes, homework_id, student_id, no_correct_result, 0, "Needs Review", student_level
                 )
-=======
-            "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
-        }
-        correct = extract_correct_mcq_from_prompt(prompt)
-        chosen = extract_mcq_choice(student_text)
-
-        if not correct:
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
             return {
                 "student_id": student_id,
                 "homework_id": homework_id,
@@ -2542,7 +2417,6 @@ async def homework_validate(
                 "student_level": student_level,
                 "status": "Needs Review",
                 "match_percentage": 0,
-<<<<<<< HEAD
                 "submission_remarks": None,
                 "rule_based_remark": "MCQ correct option not found in prompt. Include 'Correct: B' or similar in prompt.",
                 "student_extracted_text": student_text,
@@ -2554,22 +2428,11 @@ async def homework_validate(
             }
         elif not chosen:
             # Save annotated PDF with circle mark
-            if is_pdf_submission and original_file_bytes:
+            if can_annotate and original_file_bytes:
                 no_chosen_result = [{'qid': extract_qid_from_prompt(prompt, erp_row), 'correct': None, 'chosen': 'Not Detected', 'correct_answer': correct or 'N/A'}]
                 annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                     original_file_bytes, homework_id, student_id, no_chosen_result, 0, "Needs Review", student_level
                 )
-=======
-                "ai_generated_remark": None,
-                "rule_based_remark": "MCQ correct option not found in prompt. Include 'Correct: B' or similar in prompt.",
-                "student_extracted_text": student_text,
-                "llm_used": False,
-                "debug": {"correct": correct, "chosen": chosen},
-                "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
-            }
-
-        if not chosen:
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
             return {
                 "student_id": student_id,
                 "homework_id": homework_id,
@@ -2579,24 +2442,16 @@ async def homework_validate(
                 "student_level": student_level,
                 "status": "Needs Review",
                 "match_percentage": 0,
-<<<<<<< HEAD
                 "submission_remarks": None,
                 "rule_based_remark": "Student option (A/B/C/D) not detected clearly.",
                 "student_extracted_text": student_text,
                 "llm_used": False,
                 "question_marks": make_question_marks([]),
             "annotated_pdf": annotated_pdf_filename,
-=======
-                "ai_generated_remark": None,
-                "rule_based_remark": "Student option (A/B/C/D) not detected clearly.",
-                "student_extracted_text": student_text,
-                "llm_used": False,
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
                 "debug": {"correct": correct, "chosen": chosen},
                 "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
             }
 
-<<<<<<< HEAD
         # Only process MCQ validation if not redirecting to narrative
         if not redirect_to_narrative:
             is_correct = (chosen == correct)
@@ -2615,7 +2470,7 @@ async def homework_validate(
             # Save annotated PDF
             _qid = extract_qid_from_prompt(prompt, erp_row)
             mcq_results_single = [{'qid': _qid, 'correct': is_correct, 'chosen': chosen, 'correct_answer': correct}]
-            if is_pdf_submission and original_file_bytes:
+            if can_annotate and original_file_bytes:
                 annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                     original_file_bytes, homework_id, student_id, mcq_results_single, match_percentage, status, student_level
                 )
@@ -2642,34 +2497,10 @@ async def homework_validate(
  
     if gemini_client is None:
         # Save annotated PDF
-        if is_pdf_submission and original_file_bytes:
+        if can_annotate and original_file_bytes:
             annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                 original_file_bytes, homework_id, student_id, [], 0, "Needs Review", student_level
             )
-=======
-        is_correct = (chosen == correct)
-        return {
-            "student_id": student_id,
-            "homework_id": homework_id,
-            "sub_institute_id": sub_institute_id,
-            "syear": syear,
-            "question_type": "mcq",
-            "student_level": student_level,
-            "status": "Verified" if is_correct else "Needs Review",
-            "match_percentage": 100 if is_correct else 0,
-            "ai_generated_remark": None,
-            "rule_based_remark": "Correct." if is_correct else f"Incorrect. Expected {correct.upper()}, got {chosen.upper()}.",
-            "student_extracted_text": student_text,
-            "llm_used": False,
-            "debug": {"correct": correct, "chosen": chosen},
-            "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
-        }
-
-    # =========================================================
-    # ✅ NARRATIVE CHECK (Gemini generates reference)
-    # =========================================================
-    if gemini_client is None:
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
         return {
             "student_id": student_id,
             "homework_id": homework_id,
@@ -2679,20 +2510,13 @@ async def homework_validate(
             "student_level": student_level,
             "status": "Needs Review",
             "match_percentage": 0,
-<<<<<<< HEAD
             "submission_remarks": None,
-=======
-            "ai_generated_remark": None,
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
             "rule_based_remark": "Gemini not configured. Check /health/llm.",
             "llm_used": False,
             "llm_error": parse_gemini_error(GEMINI_LAST_ERROR),
             "student_extracted_text": student_text,
-<<<<<<< HEAD
             "question_marks": make_question_marks([]),
             "annotated_pdf": annotated_pdf_filename,
-=======
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
@@ -2713,14 +2537,11 @@ async def homework_validate(
     )
 
     if not response_text:
-<<<<<<< HEAD
         # Save annotated PDF
-        if is_pdf_submission and original_file_bytes:
+        if can_annotate and original_file_bytes:
             annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                 original_file_bytes, homework_id, student_id, [], 0, "Needs Review", student_level
             )
-=======
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
         return {
             "student_id": student_id,
             "homework_id": homework_id,
@@ -2730,20 +2551,13 @@ async def homework_validate(
             "student_level": student_level,
             "status": "Needs Review",
             "match_percentage": 0,
-<<<<<<< HEAD
             "submission_remarks": None,
-=======
-            "ai_generated_remark": None,
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
             "rule_based_remark": "Gemini failed. Check /health/llm.",
             "llm_used": False,
             "llm_error": parse_gemini_error(GEMINI_LAST_ERROR),
             "student_extracted_text": student_text,
-<<<<<<< HEAD
             "question_marks": make_question_marks([]),
             "annotated_pdf": annotated_pdf_filename,
-=======
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
@@ -2751,14 +2565,11 @@ async def homework_validate(
         m = re.search(r"\{.*\}", response_text, flags=re.S)
         payload = json.loads(m.group(0) if m else response_text)
     except Exception as e:
-<<<<<<< HEAD
         # Save annotated PDF
-        if is_pdf_submission and original_file_bytes:
+        if can_annotate and original_file_bytes:
             annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                 original_file_bytes, homework_id, student_id, [], 0, "Needs Review", student_level
             )
-=======
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
         return {
             "student_id": student_id,
             "homework_id": homework_id,
@@ -2768,20 +2579,13 @@ async def homework_validate(
             "student_level": student_level,
             "status": "Needs Review",
             "match_percentage": 0,
-<<<<<<< HEAD
             "submission_remarks": None,
-=======
-            "ai_generated_remark": None,
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
             "rule_based_remark": "Gemini returned non-JSON output.",
             "llm_used": False,
             "llm_error": {"ok": False, "error_type": "GEMINI_BAD_JSON", "message": str(e), "raw": response_text[:800]},
             "student_extracted_text": student_text,
-<<<<<<< HEAD
             "question_marks": make_question_marks([]),
             "annotated_pdf": annotated_pdf_filename,
-=======
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
@@ -2792,14 +2596,11 @@ async def homework_validate(
     key_points = [str(x).strip() for x in key_points if str(x).strip()]
 
     if not ai_reference_answer:
-<<<<<<< HEAD
         # Save annotated PDF
-        if is_pdf_submission and original_file_bytes:
+        if can_annotate and original_file_bytes:
             annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
                 original_file_bytes, homework_id, student_id, [], 0, "Needs Review", student_level
             )
-=======
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
         return {
             "student_id": student_id,
             "homework_id": homework_id,
@@ -2809,19 +2610,12 @@ async def homework_validate(
             "student_level": student_level,
             "status": "Needs Review",
             "match_percentage": 0,
-<<<<<<< HEAD
             "submission_remarks": None,
             "rule_based_remark": "AI returned empty reference answer.",
             "llm_used": True,
             "student_extracted_text": student_text,
             "question_marks": make_question_marks([]),
             "annotated_pdf": annotated_pdf_filename,
-=======
-            "ai_generated_remark": None,
-            "rule_based_remark": "AI returned empty reference answer.",
-            "llm_used": True,
-            "student_extracted_text": student_text,
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
             "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
         }
 
@@ -2852,11 +2646,7 @@ async def homework_validate(
         f"{remark_prompt}"
     )
 
-<<<<<<< HEAD
     submission_remark = generate_gemini_response(
-=======
-    ai_generated_remark = generate_gemini_response(
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
         prompt=resp2_prompt,
         system_prompt="You are a strict, helpful teacher. Be concise and factual.",
         max_tokens=140,
@@ -2864,17 +2654,10 @@ async def homework_validate(
     )
 
     rule_based_remark = None
-<<<<<<< HEAD
     remark_llm_used = bool(submission_remark)
     remark_llm_error = None if submission_remark else (GEMINI_LAST_ERROR or "Unknown LLM error")
 
     if not submission_remark:
-=======
-    remark_llm_used = bool(ai_generated_remark)
-    remark_llm_error = None if ai_generated_remark else (GEMINI_LAST_ERROR or "Unknown LLM error")
-
-    if not ai_generated_remark:
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
         if status == "Verified":
             rule_based_remark = "Homework matches the expected answer well. Good coverage of the key ideas."
         elif status == "Partial":
@@ -2882,7 +2665,6 @@ async def homework_validate(
         else:
             rule_based_remark = "Homework does not match the expected answer enough. Please review the topic and resubmit with clearer, complete points."
 
-<<<<<<< HEAD
     # Save annotated PDF — evaluate EACH question individually against student text
     per_question_results = build_per_question_results(
         prompt, student_text, status, match_pct,
@@ -2891,13 +2673,11 @@ async def homework_validate(
         policy=policy,
         student_level=student_level,
     )
-    if is_pdf_submission and original_file_bytes:
+    if can_annotate and original_file_bytes:
         annotated_pdf_filename, annotated_pdf_url = save_annotated_pdf(
             original_file_bytes, homework_id, student_id, per_question_results, match_pct, status, student_level, "narrative"
         )
 
-=======
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
     return {
         "student_id": student_id,
         "homework_id": homework_id,
@@ -2907,11 +2687,7 @@ async def homework_validate(
         "student_level": student_level,
         "status": status,
         "match_percentage": match_pct,
-<<<<<<< HEAD
         "submission_remarks": submission_remark if submission_remark else None,
-=======
-        "ai_generated_remark": ai_generated_remark if ai_generated_remark else None,
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
         "rule_based_remark": rule_based_remark,
         "llm_used": True,
         "remark_llm_used": remark_llm_used,
@@ -2921,21 +2697,15 @@ async def homework_validate(
         "key_points": key_points,
         "key_points_covered": covered,
         "key_points_missing": missing,
-<<<<<<< HEAD
         "question_marks": make_question_marks(per_question_results),
         "annotated_pdf": annotated_pdf_filename,
-=======
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
         "debug": {
             "similarity": sim,
             "coverage": coverage,
             "policy": policy,
-<<<<<<< HEAD
             "per_question_results": per_question_results,
             "erp_row_fields": list(erp_row.keys()) if erp_row else [],
             "erp_student_level_raw": erp_row.get("student_level") or erp_row.get("level") or erp_row.get("difficulty") or erp_row.get("difficulty_level"),
-=======
->>>>>>> cdb5b148e5facdea1aec264a5b4d0b6293132b6e
         },
         "extraction": {"student": {k: v for k, v in student_info.items() if k != "text"}},
     }
